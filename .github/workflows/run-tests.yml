@@ -23,8 +23,8 @@ jobs:
       fail-fast: true
       matrix:
         os:
-        - macos-13
-        - ubuntu-22.04
+        - macos-latest
+        - ubuntu-latest
         - windows-2022
     steps:
     - name: Checkout repository
@@ -35,7 +35,7 @@ jobs:
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
       with:
-        toolchain: "1.80.0"
+        toolchain: "1.88.0"
 
     - uses: Swatinem/rust-cache@v2
       with:
@@ -45,6 +45,9 @@ jobs:
       uses: baptiste0928/cargo-install@v3
       with:
         crate: cargo-hack
+
+    - name: Check MSRV compiles
+      run: cargo hack check --each-feature --locked
 
   cargo-deny:
     name: Run cargo-deny
@@ -71,8 +74,8 @@ jobs:
       fail-fast: false
       matrix:
         os:
-        - macos-13
-        - ubuntu-22.04
+        - macos-latest
+        - ubuntu-latest
         - windows-2022
         rust:
         - beta
