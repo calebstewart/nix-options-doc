@@ -6,7 +6,7 @@ pub mod types;
 pub mod utils;
 
 use crate::error::NixDocError;
-use clap::{command, ArgGroup, Args, Parser};
+use clap::{ArgGroup, Args, Parser};
 use gix::{progress::Discard, remote::fetch::Shallow};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -314,7 +314,7 @@ pub fn prepare_path(cli: &Cli) -> Result<(PathBuf, Option<TempDir>), NixDocError
         })?;
     }
 
-    let url = gix::url::parse(cli.io.path.as_bytes().into())
+    let url = gix::url::parse(cli.io.path.as_bytes())
         .map_err(|e| NixDocError::InvalidPath(format!("Invalid git URL: {}", e)))?;
 
     // Prepare the clone builder
@@ -345,7 +345,7 @@ pub fn prepare_path(cli: &Cli) -> Result<(PathBuf, Option<TempDir>), NixDocError
         .main_worktree(Discard, &gix::interrupt::IS_INTERRUPTED)
         .map_err(|e| NixDocError::GitOperation(format!("Failed to checkout worktree: {}", e)))?;
 
-    let work_dir = repo.work_dir().ok_or(NixDocError::NoWorkDir)?;
+    let work_dir = repo.workdir().ok_or(NixDocError::NoWorkDir)?;
     Ok((work_dir.to_path_buf(), Some(temp_dir)))
 }
 

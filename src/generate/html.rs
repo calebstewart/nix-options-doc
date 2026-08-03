@@ -1,6 +1,6 @@
 use crate::error::NixDocError;
 use crate::OptionDoc;
-use comrak::{markdown_to_html, ComrakOptions};
+use comrak::{markdown_to_html, Options as ComrakOptions};
 
 /// Instant client-side regex search, plus click-to-filter by type
 /// category, over the rendered options.
@@ -596,7 +596,7 @@ pub fn generate_html(options: &[OptionDoc]) -> Result<String, NixDocError> {
     comrak_options.extension.autolink = true;
     comrak_options.extension.tasklist = true;
     comrak_options.extension.alerts = true;
-    comrak_options.render.unsafe_ = true; // Allow HTML in markdown (if needed)
+    comrak_options.render.r#unsafe = true; // Allow HTML in markdown (if needed)
 
     // Canonical legend order; only categories actually present in this
     // document get a chip.
