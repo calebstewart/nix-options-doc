@@ -6,7 +6,16 @@ A live example of the generated documentation can be found at: [Thunderbottom/fl
 
 ## Why?
 
-NixOS configurations can be complex, with numerous modules and options that need clear documentation. While many Nix projects showcase elegant module documentation, I couldn't find a dedicated tool to generate such documentation for my own projects. This tool fills that gap, while also serving as my exercise in learning Rust.
+NixOS configurations can be complex, with numerous modules and options that need clear documentation. While many Nix projects showcase elegant module documentation, I couldn't find a dedicated tool to generate it without extra setup. The usual approach, like `nixOptionsDoc`, evaluates your module tree with `nix eval`/`nix-instantiate` and feeds the result through a separate renderer, which requires a working Nix installation and `nix eval`, and a module tree that actually evaluates cleanly as a whole.
+
+`nix-options-doc` rather parses the Nix source directly instead of evaluating it, using [rnix](https://github.com/nix-community/rnix-parser), which means:
+
+- **No Nix required.** It's a single static binary. No `nix` install, `nix eval`, no `documentation.nix` boilerplate configuration. Point it at a directory or a git repository, and get docs.
+- **Works on anything, evaluable or not.** Since nothing gets evaluated, it can document work-in-progress modules, a module tree that isn't wired into a full flake or NixOS config, or someone else's repo you have no intention of building.
+- **Works on any remote repository** straight from a Git URL (HTTPS or SSH, with branch/tag selection), no manual cloning required.
+- **Simple and intuitive.** One command, sensible defaults, and four output formats (Markdown, HTML, JSON, CSV) out of the box.
+
+But this also means: since nothing is evaluated, values that depend on runtime conditions (`mkIf`, cross-file `mkMerge`, and similar) are shown in their statically-visible form rather than fully resolved (aka "evaluated"). For the common case of documenting your personal project's option type, default, description, and declaration site, that rarely matters in practice.
 
 ## Features
 
@@ -16,6 +25,7 @@ NixOS configurations can be complex, with numerous modules and options that need
 - **Repository Support**: Works with both local paths and remote Git repositories (with branch/tag selection)
 - **Variable Interpolation**: Handles `${namespace}` style variables with configurable replacements
 - **Admonition Support**: Renders warning, note, and important blocks in both Markdown and HTML output
+- **Instant Search**: The HTML output includes a built-in, client-side regex search bar
 - **Filtering Capabilities**: Filter by prefix, type, search term, or other criteria
 - **Robust Error Handling**: Detailed error messages and graceful recovery from parsing issues
 - **Parallel Processing**: Fast performance with multi-threaded file processing
@@ -153,7 +163,7 @@ The tool properly renders admonition blocks in Nix module descriptions:
 # In your Nix file:
 description = ''
   Regular description text.
-  
+
   ::: {.warning}
   This setting can impact system security.
   :::
@@ -165,7 +175,7 @@ Will be rendered in Markdown as:
 ```markdown
 Regular description text.
 
-> [!WARNING]  
+> [!WARNING]
 > This setting can impact system security.
 ```
 
@@ -175,7 +185,7 @@ And in HTML with proper styling.
 
 ### Prerequisites
 
-- Rust 1.85 or later
+- Rust 1.88 or later
 - Git (for repository cloning features)
 
 ### Building and Testing
@@ -195,7 +205,8 @@ $ RUST_LOG=debug cargo run -- --path /path/to/nixos/modules
 
 - `src/generate/` - Output format generators (Markdown, HTML, JSON, CSV)
 - `src/parser.rs` - Nix file parser using rnix syntax tree
-- `src/types.rs` - NixOS type definitions and formatting
+- `src/types.rs` - Nix type expression formatting
+- `src/nix_call.rs` - Function-call resolution and local alias detection
 - `src/utils.rs` - Helper functions for file processing and text manipulation
 - `src/error.rs` - Error type definitions and handling
 - `src/lib.rs` - Core functions and CLI structure
