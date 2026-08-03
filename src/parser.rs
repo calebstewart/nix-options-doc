@@ -492,3 +492,105 @@ fn parse_attrset(
 
     Ok(options)
 }
+
+/// Scans an entire file (regardless of where in the tree they appear -
+/// typically inside `imports = [ ... ];`, not under `options`) for
+/// `mkRenamedOptionModule`/`mkRemovedOptionModule` shims, and represents
+/// each as a synthetic `OptionDoc` at the old option's name so it shows
+/// up alongside real options in search, filtering, and every output
+/// format without any special-casing there.
+///
+/// The description is written as a GitHub-style admonition so Markdown
+/// renders it as a callout directly, and HTML gets the same styling for
+/// free since descriptions already go through the same markdown
+/// pipeline there.
+pub fn find_deprecations(
+    node: &SyntaxNode,
+    file_path: &str,
+    source_text: &str,
+    aliases: &HashMap<String, String>,
+) -> Vec<OptionDoc> {
+    let mut found = Vec::new();
+
+    if node.kind() == SyntaxKind::NODE_APPLY {
+        if let Some((fn_name, args)) = resolve_call(node, aliases) {
+            match fn_name.as_str() {
+                "mkRenamedOptionModule" => {
+                    if let (Some(old_name), Some(new_name)) = (
+                        args.first().and_then(list_of_strings).map(|p| p.join(".")),
+                        args.get(1).and_then(list_of_strings).map(|p| p.join(".")),
+                    ) {
+                        found.push(deprecation_option_doc(
+                            &old_name,
+                            format!(
+                                "> [!WARNING]\n> This option was renamed. Use `{new_name}` instead."
+                            ),
+                            "renamed option",
+                            file_path,
+                            get_line_number(node, source_text),
+                        ));
+                    }
+                    // `resolve_call` already unwinds the whole curried
+                    // application chain, so the nested Apply nodes making
+                    // up that chain resolve to this same call at
+                    // progressively smaller (incomplete) arg lists -
+                    // don't recurse into them and double-count it.
+                    return found;
+                }
+                "mkRemovedOptionModule" => {
+                    if let Some(old_name) =
+                        args.first().and_then(list_of_strings).map(|p| p.join("."))
+                    {
+                        let message = args
+                            .get(1)
+                            .filter(|n| n.kind() == SyntaxKind::NODE_STRING)
+                            .map(string_text)
+                            .filter(|m| !m.trim().is_empty());
+                        let detail = match message {
+                            Some(message) => format!(" {message}"),
+                            None => String::new(),
+                        };
+                        found.push(deprecation_option_doc(
+                            &old_name,
+                            format!("> [!WARNING]\n> This option has been removed.{detail}"),
+                            "removed option",
+                            file_path,
+                            get_line_number(node, source_text),
+                        ));
+                    }
+                    return found;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    for child in node.children() {
+        found.extend(find_deprecations(&child, file_path, source_text, aliases));
+    }
+
+    found
+}
+
+/// Builds a synthetic `OptionDoc` representing a rename/removal shim.
+fn deprecation_option_doc(
+    name: &str,
+    description: String,
+    nix_type: &str,
+    file_path: &str,
+    line_number: usize,
+) -> OptionDoc {
+    OptionDoc {
+        name: name.to_string(),
+        description: Some(description),
+        nix_type: nix_type.to_string(),
+        default_value: None,
+        example: None,
+        declarations: vec![Declaration {
+            file_path: file_path.to_string(),
+            line_number,
+            description: None,
+            condition: None,
+        }],
+    }
+}

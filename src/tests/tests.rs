@@ -988,3 +988,58 @@ fn test_mkif_condition_tracking() -> Result<(), Box<dyn std::error::Error + Send
 
     Ok(())
 }
+
+/// Tests that `mkRenamedOptionModule`/`mkRemovedOptionModule` shims
+/// (typically found in `imports`, not `options`) surface as synthetic
+/// entries at the old option's name, pointing at the replacement or
+/// explaining the removal.
+#[test]
+fn test_deprecated_options() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let temp_dir = TempDir::new()?;
+    let content = r#"
+{
+  imports = [
+    (lib.mkRenamedOptionModule [ "services" "oldName" ] [ "services" "newName" ])
+    (lib.mkRemovedOptionModule [ "services" "goneName" ] "Use services.newName instead.")
+    (lib.mkRemovedOptionModule [ "services" "silentlyGone" ] "")
+  ];
+}
+"#;
+    create_test_file(temp_dir.path(), "deprecations.nix", content)?;
+
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
+
+    let renamed = options
+        .iter()
+        .find(|o| o.name == "services.oldName")
+        .expect("renamed option shim should be found");
+    assert_eq!(renamed.nix_type, "renamed option");
+    assert!(renamed
+        .description
+        .as_deref()
+        .unwrap()
+        .contains("Use `services.newName` instead."));
+
+    let removed = options
+        .iter()
+        .find(|o| o.name == "services.goneName")
+        .expect("removed option shim should be found");
+    assert_eq!(removed.nix_type, "removed option");
+    assert!(removed
+        .description
+        .as_deref()
+        .unwrap()
+        .contains("Use services.newName instead."));
+
+    let silently_removed = options
+        .iter()
+        .find(|o| o.name == "services.silentlyGone")
+        .expect("removed option shim with an empty message should still be found");
+    assert!(silently_removed
+        .description
+        .as_deref()
+        .unwrap()
+        .contains("This option has been removed."));
+
+    Ok(())
+}

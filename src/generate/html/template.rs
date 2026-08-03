@@ -406,6 +406,7 @@ pub(super) const HTML_TEMPLATE_HEAD: &str = r#"<!DOCTYPE html>
         .t-list { --c: var(--c-list); }
         .t-set { --c: var(--c-set); }
         .t-submodule { --c: var(--c-submodule); }
+        .t-deprecated { --c: var(--danger); }
         .t-any { --c: var(--c-any); }
 
         /* ---- option entries (ledger style: hairlines, not boxes) ---- */

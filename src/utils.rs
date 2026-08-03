@@ -233,7 +233,7 @@ pub fn process_nix_file(
 
             // Parse the file and get options
             let aliases = collect_aliases(&parse.syntax());
-            match parser::visit_node(
+            let mut file_options = match parser::visit_node(
                 &parse.syntax(),
                 &relative_path,
                 "",
@@ -247,7 +247,16 @@ pub fn process_nix_file(
                     log::error!("Error parsing file {}: {}", file_path.display(), e);
                     Vec::new()
                 }
-            }
+            };
+
+            file_options.extend(parser::find_deprecations(
+                &parse.syntax(),
+                &relative_path,
+                &content,
+                &aliases,
+            ));
+
+            file_options
         }
         Err(e) => {
             log::error!("Error reading file {}: {}", file_path.display(), e);

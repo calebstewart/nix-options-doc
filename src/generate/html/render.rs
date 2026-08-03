@@ -7,7 +7,7 @@ use comrak::{markdown_to_html, Options as ComrakOptions};
 
 /// Canonical legend order; only categories actually present in a given
 /// document get a chip (see [`super::generate_html`]).
-pub(super) const CATEGORIES: [(&str, &str); 9] = [
+pub(super) const CATEGORIES: [(&str, &str); 10] = [
     ("bool", "boolean"),
     ("choice", "choice"),
     ("string", "string"),
@@ -16,6 +16,7 @@ pub(super) const CATEGORIES: [(&str, &str); 9] = [
     ("list", "list"),
     ("set", "set"),
     ("submodule", "submodule"),
+    ("deprecated", "deprecated"),
     ("any", "other"),
 ];
 
@@ -26,7 +27,9 @@ pub(super) const CATEGORIES: [(&str, &str); 9] = [
 /// the already human-formatted string, not a structural type analysis.
 fn classify_type(nix_type: &str) -> (&'static str, &'static str) {
     let t = nix_type.to_lowercase();
-    if t.contains("list of") {
+    if t.contains("renamed option") || t.contains("removed option") {
+        ("deprecated", "deprecated")
+    } else if t.contains("list of") {
         ("list", "list")
     } else if t.contains("attribute set") {
         ("set", "set")
