@@ -22,6 +22,8 @@ use std::collections::HashMap;
 /// - `replacements`: A map of variable replacements for dynamic segments.
 /// - `source_text`: The full text of the source file for line number calculation.
 /// - `aliases`: Local function aliases (see [`crate::nix_call::collect_aliases`]).
+/// - `let_bindings`: Local `let`-bound expressions (see
+///   [`crate::nix_call::collect_let_bindings`]).
 /// - `condition`: The `mkIf` condition(s) currently in scope, if any (see
 ///   [`as_mkif`]), joined with `&&` when nested.
 ///
@@ -35,6 +37,7 @@ pub fn visit_node(
     replacements: &HashMap<String, String>,
     source_text: &str,
     aliases: &HashMap<String, String>,
+    let_bindings: &HashMap<String, SyntaxNode>,
     condition: Option<&str>,
 ) -> Result<Vec<OptionDoc>, Box<dyn std::error::Error + Send + Sync>> {
     let mut options = Vec::new();
@@ -60,6 +63,7 @@ pub fn visit_node(
                     replacements,
                     source_text,
                     aliases,
+                    let_bindings,
                     condition,
                 )?;
                 options.append(&mut nested_options);
@@ -79,6 +83,7 @@ pub fn visit_node(
             replacements,
             source_text,
             aliases,
+            let_bindings,
             Some(&new_condition),
         )?;
         options.append(&mut child_options);
@@ -92,6 +97,7 @@ pub fn visit_node(
                 replacements,
                 source_text,
                 aliases,
+                let_bindings,
                 condition,
             )?;
             options.append(&mut child_options);
@@ -261,6 +267,8 @@ fn scan_option_overrides(
 /// - `replacements`: A map of variable replacements for dynamic values.
 /// - `source_text`: The source text of the file for line number calculation.
 /// - `aliases`: Local function aliases (see [`crate::nix_call::collect_aliases`]).
+/// - `let_bindings`: Local `let`-bound expressions (see
+///   [`crate::nix_call::collect_let_bindings`]).
 /// - `condition`: The `mkIf` condition(s) currently in scope, if any (see
 ///   [`visit_node`]).
 ///
@@ -274,6 +282,7 @@ fn parse_attrset(
     replacements: &HashMap<String, String>,
     source_text: &str,
     aliases: &HashMap<String, String>,
+    let_bindings: &HashMap<String, SyntaxNode>,
     condition: Option<&str>,
 ) -> Result<Vec<OptionDoc>, Box<dyn std::error::Error + Send + Sync>> {
     let mut options = Vec::new();
@@ -290,6 +299,7 @@ fn parse_attrset(
                     replacements,
                     source_text,
                     aliases,
+                    let_bindings,
                     condition,
                 )?;
                 options.append(&mut child_options);
@@ -317,6 +327,7 @@ fn parse_attrset(
                                 replacements,
                                 source_text,
                                 aliases,
+                                let_bindings,
                                 condition,
                             )?;
                             options.append(&mut nested);
@@ -334,6 +345,7 @@ fn parse_attrset(
                             replacements,
                             source_text,
                             aliases,
+                            let_bindings,
                             Some(&new_condition),
                         )?;
                         options.append(&mut nested);
@@ -438,7 +450,7 @@ fn parse_attrset(
                     // rather than only showing "submodule" as an opaque type.
                     if let Some(type_node) = type_node {
                         if let Some((body, is_container)) =
-                            types::find_submodule_body(&type_node, aliases)
+                            types::find_submodule_body(&type_node, aliases, let_bindings)
                         {
                             let nested_prefix = if is_container {
                                 format!("{}.<name>", current_prefix)
@@ -454,6 +466,7 @@ fn parse_attrset(
                                     replacements,
                                     source_text,
                                     aliases,
+                                    let_bindings,
                                     condition,
                                 )?;
                                 options.append(&mut nested);
@@ -564,6 +577,7 @@ fn parse_attrset(
                     replacements,
                     source_text,
                     aliases,
+                    let_bindings,
                     condition,
                 )?;
                 options.append(&mut nested_options);
@@ -581,6 +595,7 @@ fn parse_attrset(
                     replacements,
                     source_text,
                     aliases,
+                    let_bindings,
                     condition,
                 )?;
                 options.append(&mut nested_options);
@@ -604,6 +619,7 @@ fn parse_attrset(
                             replacements,
                             source_text,
                             aliases,
+                            let_bindings,
                             condition,
                         )?;
 

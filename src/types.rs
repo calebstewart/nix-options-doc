@@ -128,22 +128,39 @@ fn format_ident(name: &str) -> Option<String> {
 /// submodule's body expression node (an attrset or a lambda) if so, along
 /// with whether it's wrapped in a container that should get a `<name>`
 /// placeholder segment when its nested options are expanded.
+///
+/// Also resolves through a bare identifier referring to a submodule type
+/// bound elsewhere in the file (e.g. `type = listOf includeModule;`,
+/// where `includeModule = types.submodule { ... };` is a separate `let`
+/// binding - a common pattern for reusing a submodule type across
+/// several options, or just keeping a large inline submodule readable),
+/// using `let_bindings` (see [`crate::nix_call::collect_let_bindings`]).
 pub fn find_submodule_body(
     node: &SyntaxNode,
     aliases: &HashMap<String, String>,
+    let_bindings: &HashMap<String, SyntaxNode>,
 ) -> Option<(SyntaxNode, bool)> {
     let node = unwrap_paren(node);
-    let (name, args) = resolve_call(&node, aliases)?;
-    match name.as_str() {
-        "submodule" | "submoduleWith" => Some((unwrap_paren(args.first()?), false)),
-        "attrsOf" | "listOf" | "nonEmptyListOf" | "lazyAttrsOf" | "nullOr" | "uniq" => {
-            let inner = args.first()?;
-            let (body, _) = find_submodule_body(inner, aliases)?;
-            let is_container = !matches!(name.as_str(), "nullOr" | "uniq");
-            Some((body, is_container))
-        }
-        _ => None,
+    if let Some((name, args)) = resolve_call(&node, aliases) {
+        return match name.as_str() {
+            "submodule" | "submoduleWith" => Some((unwrap_paren(args.first()?), false)),
+            "attrsOf" | "listOf" | "nonEmptyListOf" | "lazyAttrsOf" | "nullOr" | "uniq" => {
+                let inner = args.first()?;
+                let (body, _) = find_submodule_body(inner, aliases, let_bindings)?;
+                let is_container = !matches!(name.as_str(), "nullOr" | "uniq");
+                Some((body, is_container))
+            }
+            _ => None,
+        };
     }
+
+    if node.kind() == SyntaxKind::NODE_IDENT {
+        let name = ident_text(&node)?;
+        let bound = let_bindings.get(&name)?.clone();
+        return find_submodule_body(&bound, aliases, let_bindings);
+    }
+
+    None
 }
 
 /// Unwraps any number of enclosing `NODE_PAREN` nodes, e.g. the

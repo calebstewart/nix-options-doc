@@ -11,7 +11,7 @@ use textwrap::dedent;
 
 use std::path::{Path, PathBuf};
 
-use crate::nix_call::collect_aliases;
+use crate::nix_call::{collect_aliases, collect_let_bindings};
 use crate::parser;
 use crate::OptionDoc;
 
@@ -286,6 +286,7 @@ pub fn process_nix_file(
 
             // Parse the file and get options
             let aliases = collect_aliases(&parse.syntax());
+            let let_bindings = collect_let_bindings(&parse.syntax());
             let mut file_options = match parser::visit_node(
                 &parse.syntax(),
                 &relative_path,
@@ -293,6 +294,7 @@ pub fn process_nix_file(
                 replacements,
                 &content,
                 &aliases,
+                &let_bindings,
                 None,
             ) {
                 Ok(file_options) => file_options,

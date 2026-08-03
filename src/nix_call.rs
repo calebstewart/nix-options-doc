@@ -118,3 +118,46 @@ fn collect_aliases_rec(node: &SyntaxNode, aliases: &mut HashMap<String, String>)
         collect_aliases_rec(&child, aliases);
     }
 }
+
+/// Scans a file for local `let <name> = <value>; in ...` bindings,
+/// mapping the local name to its full value expression node - unlike
+/// [`collect_aliases`], which only tracks bindings that are themselves a
+/// bare function reference (for canonicalizing a renamed function call),
+/// this keeps the *whole* expression, so a bare identifier reference
+/// elsewhere (e.g. `type = listOf includeModule;`, where
+/// `includeModule = types.submodule { ... };` is bound separately) can be
+/// resolved back to what it actually refers to for structural analysis
+/// that needs more than just a name.
+///
+/// Like `collect_aliases`, this only follows single, direct bindings - it
+/// does not attempt full scope resolution (shadowing, etc).
+pub fn collect_let_bindings(root: &SyntaxNode) -> HashMap<String, SyntaxNode> {
+    let mut bindings = HashMap::new();
+    collect_let_bindings_rec(root, &mut bindings);
+    bindings
+}
+
+fn collect_let_bindings_rec(node: &SyntaxNode, bindings: &mut HashMap<String, SyntaxNode>) {
+    if let Some(let_in) = ast::LetIn::cast(node.clone()) {
+        for entry in let_in.attrpath_values() {
+            let Some(attrpath) = entry.attrpath() else {
+                continue;
+            };
+            let mut attrs = attrpath.attrs();
+            let (Some(ast::Attr::Ident(key_ident)), None) = (attrs.next(), attrs.next()) else {
+                continue;
+            };
+            let (Some(key), Some(value)) = (
+                key_ident.ident_token().map(|t| t.text().to_string()),
+                entry.value(),
+            ) else {
+                continue;
+            };
+            bindings.insert(key, value.syntax().clone());
+        }
+    }
+
+    for child in node.children() {
+        collect_let_bindings_rec(&child, bindings);
+    }
+}

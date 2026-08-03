@@ -1197,3 +1197,48 @@ fn test_attrset_update_override() -> Result<(), Box<dyn std::error::Error + Send
 
     Ok(())
 }
+
+/// Tests that a submodule type bound to a local `let` variable and
+/// referenced by name (`type = listOf includeModule;`, where
+/// `includeModule = types.submodule { ... };` is defined elsewhere) is
+/// still recursed into, the same as an inline `types.submodule {...}`
+/// would be. This is the pattern home-manager's programs/git.nix uses
+/// for its `includes` option (see nix-options-doc#5).
+#[test]
+fn test_let_bound_submodule_type() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let temp_dir = TempDir::new()?;
+    let content = r#"
+{ lib, ... }:
+let
+  includeModule = lib.types.submodule {
+    options = {
+      condition = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+      };
+      path = lib.mkOption {
+        type = lib.types.str;
+      };
+    };
+  };
+in
+{
+  options.programs.git.includes = lib.mkOption {
+    type = lib.types.listOf includeModule;
+    default = [ ];
+  };
+}
+"#;
+    create_test_file(temp_dir.path(), "letbound.nix", content)?;
+
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
+
+    assert!(options
+        .iter()
+        .any(|o| o.name == "options.programs.git.includes.<name>.condition"));
+    assert!(options
+        .iter()
+        .any(|o| o.name == "options.programs.git.includes.<name>.path"));
+
+    Ok(())
+}
