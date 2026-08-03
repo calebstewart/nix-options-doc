@@ -1147,3 +1147,53 @@ fn test_let_in_attrset_value() -> Result<(), Box<dyn std::error::Error + Send + 
 
     Ok(())
 }
+
+/// Tests that `<option-constructor> // { field = ...; }` (the standard
+/// nixpkgs idiom for e.g. an enable option that defaults to true) is
+/// parsed as the base option with the override attrset's fields applied
+/// on top, rather than being dropped entirely.
+#[test]
+fn test_attrset_update_override() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let temp_dir = TempDir::new()?;
+    let content = r#"
+{
+  options.test = {
+    assertUnique = lib.mkEnableOption "" // {
+      default = true;
+    };
+    named = lib.mkEnableOption "the named thing" // {
+      default = true;
+      example = false;
+    };
+  };
+}
+"#;
+    create_test_file(temp_dir.path(), "override.nix", content)?;
+
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
+
+    let assert_unique = options
+        .iter()
+        .find(|o| o.name == "options.test.assertUnique")
+        .expect("mkEnableOption \"\" // { default = true; } should still be found");
+    assert_eq!(assert_unique.default_value, Some("true".to_string()));
+    // With no explicit description, falls back to the option's own leaf
+    // name instead of nixpkgs' bare "Whether to enable ." text.
+    assert_eq!(
+        assert_unique.description,
+        Some("Whether to enable `assertUnique`.".to_string())
+    );
+
+    let named = options
+        .iter()
+        .find(|o| o.name == "options.test.named")
+        .expect("mkEnableOption with a description, overridden, should still be found");
+    assert_eq!(named.default_value, Some("true".to_string()));
+    assert_eq!(named.example, Some("false".to_string()));
+    assert_eq!(
+        named.description,
+        Some("Whether to enable the named thing.".to_string())
+    );
+
+    Ok(())
+}

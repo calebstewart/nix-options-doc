@@ -207,6 +207,51 @@ fn render_value(node: &SyntaxNode, aliases: &HashMap<String, String>) -> String 
     custom_dedent(&clean_literal_expr(&effective.text().to_string()))
 }
 
+/// The subset of an option's fields that an `{ default = ...; }`-style
+/// override attrset (as in `<expr> // { default = ...; }`) can set.
+#[derive(Default)]
+struct OptionOverrides {
+    nix_type: Option<String>,
+    description: Option<String>,
+    default_value: Option<String>,
+    example: Option<String>,
+}
+
+/// Scans an attrset for `type`/`description`/`default`/`example` entries,
+/// the same fields `mkOption { ... }` itself accepts, for use as an
+/// override attrset in `<option-constructor> // { ... }`.
+fn scan_option_overrides(
+    attr_set: &SyntaxNode,
+    aliases: &HashMap<String, String>,
+    replacements: &HashMap<String, String>,
+) -> OptionOverrides {
+    let mut overrides = OptionOverrides::default();
+
+    for attr in attr_set.children() {
+        if attr.kind() != SyntaxKind::NODE_ATTRPATH_VALUE {
+            continue;
+        }
+        let attr_key = attr
+            .children()
+            .find(|n| n.kind() == SyntaxKind::NODE_ATTRPATH)
+            .and_then(|n| n.children().next())
+            .map(|n| n.text().to_string());
+        let attr_value = attr.children().nth(1);
+
+        match (attr_key.as_deref(), attr_value) {
+            (Some("type"), Some(v)) => overrides.nix_type = Some(types::format_type(&v, aliases)),
+            (Some("description"), Some(v)) => {
+                overrides.description = Some(process_description(&string_text(&v), replacements))
+            }
+            (Some("default"), Some(v)) => overrides.default_value = Some(render_value(&v, aliases)),
+            (Some("example"), Some(v)) => overrides.example = Some(render_value(&v, aliases)),
+            _ => {}
+        }
+    }
+
+    overrides
+}
+
 /// Parses an attribute set node to extract NixOS module option definitions.
 ///
 /// # Arguments
@@ -298,14 +343,27 @@ fn parse_attrset(
                     let description = args
                         .first()
                         .filter(|n| n.kind() == SyntaxKind::NODE_STRING)
-                        .map(|n| process_description(&string_text(n), replacements));
+                        .map(|n| process_description(&string_text(n), replacements))
+                        .filter(|d| !d.trim().is_empty());
+
+                    // `mkEnableOption ""` is a common idiom (usually
+                    // paired with `// { default = true; }`) for options
+                    // whose purpose is already clear from their own
+                    // name, but nixpkgs' own default text then reads as
+                    // "Whether to enable ." with nothing to enable. Fall
+                    // back to the option's own leaf name so it stays
+                    // informative instead of just looking broken.
+                    let subject = description.unwrap_or_else(|| {
+                        current_prefix
+                            .rsplit('.')
+                            .next()
+                            .map(|leaf| format!("`{leaf}`"))
+                            .unwrap_or_default()
+                    });
 
                     options.push(OptionDoc {
                         name: current_prefix.to_string(),
-                        description: Some(format!(
-                            "Whether to enable {}.",
-                            description.unwrap_or_default()
-                        )),
+                        description: Some(format!("Whether to enable {subject}.")),
                         nix_type: "boolean".to_string(),
                         default_value: Some(String::from("false")),
                         example: Some(String::from("true")),
@@ -526,6 +584,51 @@ fn parse_attrset(
                     condition,
                 )?;
                 options.append(&mut nested_options);
+            }
+        }
+        // Handle `<expr> // { field = value; ... }` (attrset update),
+        // e.g. `mkEnableOption "" // { default = true; }` - the
+        // nixpkgs-recommended way to write an enable option that
+        // defaults to true, since mkEnableOption itself always
+        // defaults to false. Parse the left side normally, then apply
+        // any default/description/example/type fields from the right
+        // side as overrides on top of it.
+        SyntaxKind::NODE_BIN_OP => {
+            if let Some(bin_op) = ast::BinOp::cast(node.clone()) {
+                if bin_op.operator() == Some(ast::BinOpKind::Update) {
+                    if let (Some(lhs), Some(rhs)) = (bin_op.lhs(), bin_op.rhs()) {
+                        let mut base = parse_attrset(
+                            lhs.syntax(),
+                            file_path,
+                            current_prefix,
+                            replacements,
+                            source_text,
+                            aliases,
+                            condition,
+                        )?;
+
+                        let rhs_node = unwrap_paren(rhs.syntax());
+                        if rhs_node.kind() == SyntaxKind::NODE_ATTR_SET {
+                            let overrides = scan_option_overrides(&rhs_node, aliases, replacements);
+                            for opt in &mut base {
+                                if let Some(nix_type) = &overrides.nix_type {
+                                    opt.nix_type = nix_type.clone();
+                                }
+                                if overrides.description.is_some() {
+                                    opt.description = overrides.description.clone();
+                                }
+                                if overrides.default_value.is_some() {
+                                    opt.default_value = overrides.default_value.clone();
+                                }
+                                if overrides.example.is_some() {
+                                    opt.example = overrides.example.clone();
+                                }
+                            }
+                        }
+
+                        options.append(&mut base);
+                    }
+                }
             }
         }
         _ => {
