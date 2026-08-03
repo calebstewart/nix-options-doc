@@ -111,6 +111,19 @@ $ nix-options-doc --path git@github.com:user/repo.git --branch feature-branch
 $ nix-options-doc --path git://example.com/repo.git --depth 5
 ```
 
+Declaration links (e.g. `modules/nginx.nix#L42`) are always relative to
+wherever the source was read from, whether that's a local path or a
+freshly cloned repository. If you host the generated docs somewhere other
+than alongside that source tree - a docs site, GitHub Pages, anywhere not
+serving the repo itself - those links won't resolve on their own. Use
+`--out-prefix` to rewrite them to point at the real source instead:
+
+```bash
+# Point declaration links at the repo's GitHub blob view
+$ nix-options-doc --path https://github.com/user/repo.git \
+    --out-prefix https://github.com/user/repo/blob/main
+```
+
 ### Command Line Options
 
 ```
@@ -121,6 +134,7 @@ Options:
   -o, --out <OUT>                  Path to output file or 'stdout' [default: stdout]
   -f, --format <FORMAT>            Output format [default: markdown] [possible values: markdown, json, html, csv]
   -s, --sort                       Sort options alphabetically
+      --out-prefix <PATH>          Prefix declaration links with this URL or path
   -b, --branch <BRANCH>            Git branch or tag to use (for remote repositories)
   -d, --depth <DEPTH>              Git commit depth for shallow clones [default: 1]
       --filter-by-prefix <PREFIX>  Filter options by prefix (e.g. "services.nginx")
