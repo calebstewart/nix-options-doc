@@ -240,6 +240,7 @@ pub(super) const HTML_TEMPLATE_HEAD: &str = r#"<!DOCTYPE html>
             border-radius: 6px;
             padding: 0.9em 1em;
             margin: 0;
+            max-width: 100%;
             overflow: auto;
         }
         pre code { background: transparent; padding: 0; font-size: 0.85em; }
@@ -452,7 +453,17 @@ pub(super) const HTML_TEMPLATE_HEAD: &str = r#"<!DOCTYPE html>
             margin: 0.9em 0 0;
         }
         .meta-row { display: flex; align-items: baseline; gap: 0.5em; }
-        .meta-row.block { flex-direction: column; align-items: stretch; flex-basis: 100%; gap: 0.3em; }
+        .meta-row.block {
+            flex-direction: column;
+            align-items: stretch;
+            flex-basis: 100%;
+            gap: 0.3em;
+            /* Without this, a flex item won't shrink below its content's
+               intrinsic width - an unbroken long line (e.g. a URL) in the
+               <pre> below would blow out the card instead of triggering
+               its own overflow-x scrollbar. */
+            min-width: 0;
+        }
         .meta-label {
             font-family: ui-monospace, "SF Mono", "Cascadia Code", monospace;
             font-size: 0.72em;
