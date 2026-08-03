@@ -66,6 +66,14 @@ pub fn generate_markdown(
             }
         }
 
+        if let Some(condition) = &primary.condition {
+            writeln!(
+                output,
+                "\n**Condition:** only declared when `{}`",
+                condition
+            )?;
+        }
+
         if !other_declarations.is_empty() {
             writeln!(output, "\n**Also declared in:**")?;
             for decl in other_declarations {
@@ -76,6 +84,9 @@ pub fn generate_markdown(
                 )?;
                 if let Some(alt_description) = &decl.description {
                     writeln!(output, "  > {}", alt_description.replace('\n', "\n  > "))?;
+                }
+                if let Some(condition) = &decl.condition {
+                    writeln!(output, "  > Only declared when `{}`", condition)?;
                 }
             }
         }

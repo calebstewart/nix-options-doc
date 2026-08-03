@@ -240,6 +240,7 @@ pub fn process_nix_file(
                 replacements,
                 &content,
                 &aliases,
+                None,
             ) {
                 Ok(file_options) => file_options,
                 Err(e) => {

@@ -153,6 +153,9 @@ pub(super) fn render_option(
     if let Some(example) = &option.example {
         meta_rows.push_str(&format_meta_row("Example", example));
     }
+    if let Some(condition) = &primary.condition {
+        meta_rows.push_str(&format_meta_row("Condition", condition));
+    }
     article.push_str(&format!(
         "        <div class=\"option-meta\">\n{meta_rows}        </div>\n"
     ));
@@ -176,6 +179,12 @@ pub(super) fn render_option(
                 article.push_str(&format!(
                     r#"<div class="alt-desc">{}</div>"#,
                     markdown_to_html(alt, comrak_options)
+                ));
+            }
+            if let Some(condition) = &decl.condition {
+                article.push_str(&format!(
+                    r#"<div class="alt-desc">Only declared when <code>{}</code></div>"#,
+                    html_escape::encode_text(condition)
                 ));
             }
             article.push_str("</li>\n");

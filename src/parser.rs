@@ -5,7 +5,7 @@
 //! module options and their metadata.
 
 use crate::nix_call::{find_attr, resolve_call};
-use crate::types;
+use crate::types::{self, unwrap_paren};
 use crate::utils::{apply_replacements, clean_description, clean_literal_expr, custom_dedent};
 use crate::{Declaration, OptionDoc};
 use rnix::ast;
@@ -22,9 +22,12 @@ use std::collections::HashMap;
 /// - `replacements`: A map of variable replacements for dynamic segments.
 /// - `source_text`: The full text of the source file for line number calculation.
 /// - `aliases`: Local function aliases (see [`crate::nix_call::collect_aliases`]).
+/// - `condition`: The `mkIf` condition(s) currently in scope, if any (see
+///   [`as_mkif`]), joined with `&&` when nested.
 ///
 /// # Returns
 /// A vector of OptionDoc structs representing the found options or an error.
+#[allow(clippy::too_many_arguments)]
 pub fn visit_node(
     node: &SyntaxNode,
     file_path: &str,
@@ -32,6 +35,7 @@ pub fn visit_node(
     replacements: &HashMap<String, String>,
     source_text: &str,
     aliases: &HashMap<String, String>,
+    condition: Option<&str>,
 ) -> Result<Vec<OptionDoc>, Box<dyn std::error::Error + Send + Sync>> {
     let mut options = Vec::new();
 
@@ -56,10 +60,28 @@ pub fn visit_node(
                     replacements,
                     source_text,
                     aliases,
+                    condition,
                 )?;
                 options.append(&mut nested_options);
             }
         }
+    } else if let Some((cond_node, value_node)) = as_mkif(node, aliases) {
+        // `mkIf cond value` - recurse into the guarded value only, with
+        // `cond` folded into the condition tracked for any option found
+        // underneath it (rather than blindly visiting all children,
+        // which would needlessly walk into the condition expression
+        // itself too).
+        let new_condition = combine_condition(condition, &format_condition(&cond_node));
+        let mut child_options = visit_node(
+            &value_node,
+            file_path,
+            prefix,
+            replacements,
+            source_text,
+            aliases,
+            Some(&new_condition),
+        )?;
+        options.append(&mut child_options);
     } else {
         // Visit all children for other node types
         for child in node.children() {
@@ -70,12 +92,40 @@ pub fn visit_node(
                 replacements,
                 source_text,
                 aliases,
+                condition,
             )?;
             options.append(&mut child_options);
         }
     }
 
     Ok(options)
+}
+
+/// If `node` is a resolved `mkIf cond value` call, returns its condition
+/// and guarded value nodes.
+fn as_mkif(
+    node: &SyntaxNode,
+    aliases: &HashMap<String, String>,
+) -> Option<(SyntaxNode, SyntaxNode)> {
+    let (name, args) = resolve_call(node, aliases)?;
+    if name != "mkIf" {
+        return None;
+    }
+    Some((args.first()?.clone(), args.get(1)?.clone()))
+}
+
+/// Formats an `mkIf` condition expression's source text for display.
+fn format_condition(node: &SyntaxNode) -> String {
+    node.text().to_string().trim().to_string()
+}
+
+/// Folds a newly-encountered `mkIf` condition into whatever condition (if
+/// any) is already in scope from an enclosing `mkIf`.
+fn combine_condition(existing: Option<&str>, new: &str) -> String {
+    match existing {
+        Some(existing) => format!("{existing} && {new}"),
+        None => new.to_string(),
+    }
 }
 
 /// Parses an attribute path node and returns a dot-separated string representing the option name.
@@ -166,9 +216,12 @@ fn render_value(node: &SyntaxNode, aliases: &HashMap<String, String>) -> String 
 /// - `replacements`: A map of variable replacements for dynamic values.
 /// - `source_text`: The source text of the file for line number calculation.
 /// - `aliases`: Local function aliases (see [`crate::nix_call::collect_aliases`]).
+/// - `condition`: The `mkIf` condition(s) currently in scope, if any (see
+///   [`visit_node`]).
 ///
 /// # Returns
 /// A vector of OptionDoc structs representing the options in the attribute set or an error.
+#[allow(clippy::too_many_arguments)]
 fn parse_attrset(
     node: &SyntaxNode,
     file_path: &str,
@@ -176,8 +229,10 @@ fn parse_attrset(
     replacements: &HashMap<String, String>,
     source_text: &str,
     aliases: &HashMap<String, String>,
+    condition: Option<&str>,
 ) -> Result<Vec<OptionDoc>, Box<dyn std::error::Error + Send + Sync>> {
     let mut options = Vec::new();
+    let node = &unwrap_paren(node);
 
     match node.kind() {
         // Nested attributes
@@ -190,6 +245,7 @@ fn parse_attrset(
                     replacements,
                     source_text,
                     aliases,
+                    condition,
                 )?;
                 options.append(&mut child_options);
             }
@@ -202,6 +258,42 @@ fn parse_attrset(
             };
 
             match fn_name.as_str() {
+                "mkMerge" => {
+                    // `mkMerge [ a b c ]` merges its list items at the same
+                    // level as the attribute it's assigned to, so each item
+                    // is parsed at the same current_prefix/condition rather
+                    // than as a nested level.
+                    if let Some(list) = args.first().and_then(|n| ast::List::cast(n.clone())) {
+                        for item in list.items() {
+                            let mut nested = parse_attrset(
+                                item.syntax(),
+                                file_path,
+                                current_prefix,
+                                replacements,
+                                source_text,
+                                aliases,
+                                condition,
+                            )?;
+                            options.append(&mut nested);
+                        }
+                    }
+                }
+                "mkIf" => {
+                    if let Some(value) = args.get(1) {
+                        let new_condition =
+                            combine_condition(condition, &format_condition(&args[0]));
+                        let mut nested = parse_attrset(
+                            value,
+                            file_path,
+                            current_prefix,
+                            replacements,
+                            source_text,
+                            aliases,
+                            Some(&new_condition),
+                        )?;
+                        options.append(&mut nested);
+                    }
+                }
                 "mkEnableOption" => {
                     let description = args
                         .first()
@@ -221,6 +313,7 @@ fn parse_attrset(
                             file_path: file_path.to_string(),
                             line_number: get_line_number(node, source_text),
                             description: None,
+                            condition: condition.map(str::to_string),
                         }],
                     });
                 }
@@ -278,6 +371,7 @@ fn parse_attrset(
                             file_path: file_path.to_string(),
                             line_number: get_line_number(node, source_text),
                             description: None,
+                            condition: condition.map(str::to_string),
                         }],
                     });
 
@@ -301,6 +395,7 @@ fn parse_attrset(
                                     replacements,
                                     source_text,
                                     aliases,
+                                    condition,
                                 )?;
                                 options.append(&mut nested);
                             }
@@ -366,6 +461,7 @@ fn parse_attrset(
                             file_path: file_path.to_string(),
                             line_number: get_line_number(node, source_text),
                             description: None,
+                            condition: condition.map(str::to_string),
                         }],
                     });
                 }
@@ -384,6 +480,7 @@ fn parse_attrset(
                     replacements,
                     source_text,
                     aliases,
+                    condition,
                 )?;
                 options.append(&mut nested_options);
             }

@@ -164,6 +164,11 @@ pub struct Declaration {
     /// is declared more than once and this particular declaration's
     /// description differs from the option's primary (first-found) one.
     pub description: Option<String>,
+
+    /// The `mkIf` condition(s) this declaration is guarded by, if any
+    /// (joined with `&&` for nested `mkIf`s). This is the condition
+    /// expression's source text, not an evaluated result.
+    pub condition: Option<String>,
 }
 
 /// Represents a documented NixOS module option.

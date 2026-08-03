@@ -107,6 +107,7 @@ fn test_markdown_generation() -> Result<(), Box<dyn std::error::Error + Send + S
                 file_path: "test.nix".to_string(),
                 line_number: 1,
                 description: None,
+                condition: None,
             }],
         },
         OptionDoc {
@@ -119,6 +120,7 @@ fn test_markdown_generation() -> Result<(), Box<dyn std::error::Error + Send + S
                 file_path: "test.nix".to_string(),
                 line_number: 2,
                 description: None,
+                condition: None,
             }],
         },
     ];
@@ -861,11 +863,13 @@ fn test_markdown_also_declared_in() -> Result<(), Box<dyn std::error::Error + Se
                 file_path: "a.nix".to_string(),
                 line_number: 1,
                 description: None,
+                condition: None,
             },
             Declaration {
                 file_path: "b.nix".to_string(),
                 line_number: 5,
                 description: Some("Different description in b.nix.".to_string()),
+                condition: None,
             },
         ],
     }];
@@ -927,6 +931,60 @@ with lib;
         .find(|o| o.name == "options.foo.pkg")
         .expect("mkPackageOption under top-level `with lib;` should be found");
     assert_eq!(pkg.nix_type, "package");
+
+    Ok(())
+}
+
+/// Tests that options declared underneath `mkIf`/`mkMerge` record the
+/// guarding condition(s) on their declaration, including nested `mkIf`s
+/// combining with `&&`, while options declared outside any `mkIf` (even
+/// alongside one inside the same `mkMerge` list) get no condition at all.
+#[test]
+fn test_mkif_condition_tracking() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let temp_dir = TempDir::new()?;
+    let content = r#"
+{
+  options.test = lib.mkMerge [
+    (lib.mkIf cfg.enable {
+      guarded = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+      };
+    })
+    (lib.mkIf cfg.enable (lib.mkIf cfg.extraFeature {
+      doublyGuarded = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+      };
+    }))
+    {
+      unguarded = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+      };
+    }
+  ];
+}
+"#;
+    create_test_file(temp_dir.path(), "conditional.nix", content)?;
+
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
+    let find = |name: &str| {
+        options
+            .iter()
+            .find(|o| o.name == format!("options.test.{name}"))
+            .unwrap_or_else(|| panic!("option {name} should be found"))
+            .declarations[0]
+            .condition
+            .clone()
+    };
+
+    assert_eq!(find("guarded"), Some("cfg.enable".to_string()));
+    assert_eq!(
+        find("doublyGuarded"),
+        Some("cfg.enable && cfg.extraFeature".to_string())
+    );
+    assert_eq!(find("unguarded"), None);
 
     Ok(())
 }

@@ -148,7 +148,7 @@ pub fn find_submodule_body(
 
 /// Unwraps any number of enclosing `NODE_PAREN` nodes, e.g. the
 /// `(types.submodule { ... })` in `attrsOf (types.submodule { ... })`.
-fn unwrap_paren(node: &SyntaxNode) -> SyntaxNode {
+pub(crate) fn unwrap_paren(node: &SyntaxNode) -> SyntaxNode {
     let mut current = node.clone();
     while let Some(paren) = ast::Paren::cast(current.clone()) {
         match paren.expr() {

@@ -37,7 +37,12 @@ pub fn generate_csv(options: &[OptionDoc]) -> Result<String, NixDocError> {
         let declarations = option
             .declarations
             .iter()
-            .map(|decl| format!("{}:{}", decl.file_path, decl.line_number))
+            .map(|decl| match &decl.condition {
+                Some(condition) => {
+                    format!("{}:{} (if {})", decl.file_path, decl.line_number, condition)
+                }
+                None => format!("{}:{}", decl.file_path, decl.line_number),
+            })
             .collect::<Vec<_>>()
             .join("; ");
 
