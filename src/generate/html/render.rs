@@ -171,6 +171,7 @@ pub(super) fn render_option(
     ));
 
     if !other_declarations.is_empty() {
+        article.push_str("        <div class=\"also-declared-label\">Also declared in</div>\n");
         article.push_str("        <ul class=\"also-declared\">\n");
         for decl in other_declarations {
             article.push_str(&format!(

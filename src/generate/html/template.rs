@@ -468,7 +468,23 @@ pub(super) const HTML_TEMPLATE_HEAD: &str = r#"<!DOCTYPE html>
             font-size: 0.78em;
             color: var(--ink-muted);
         }
-        .also-declared { margin-top: 0.4em; padding-left: 1em; list-style: none; }
+        .also-declared-label {
+            margin-top: 0.9em;
+            font-family: ui-monospace, "SF Mono", "Cascadia Code", monospace;
+            font-size: 0.72em;
+            font-weight: 600;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            color: var(--ink-muted);
+        }
+        .also-declared {
+            margin-top: 0.4em;
+            padding-left: 1em;
+            list-style: none;
+            font-family: ui-monospace, "SF Mono", "Cascadia Code", monospace;
+            font-size: 0.78em;
+            color: var(--ink-muted);
+        }
         .also-declared li { margin-top: 0.3em; }
         .also-declared .alt-desc { color: var(--ink-muted); margin: 0.2em 0 0; }
 
