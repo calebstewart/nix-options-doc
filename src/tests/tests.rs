@@ -1043,3 +1043,20 @@ fn test_deprecated_options() -> Result<(), Box<dyn std::error::Error + Send + Sy
 
     Ok(())
 }
+
+/// Tests that a blockquote written as `> **Warning:** ...` (a common
+/// informal convention outside nixpkgs' own Pandoc-based docs tooling)
+/// is recognized as an admonition, not left as a plain blockquote.
+#[test]
+fn test_blockquote_admonition_conversion() {
+    let input = "Expose the service to the internet.\n\n> **Warning:** Do *not* enable this without setting up authentication first!\n";
+
+    let expected = "Expose the service to the internet.\n\n> [!WARNING]\n> Do *not* enable this without setting up authentication first!\n";
+
+    assert_eq!(utils::convert_blockquote_admonitions(input), expected);
+
+    // Descriptions with no such blockquote are returned byte-for-byte
+    // unchanged (not just semantically equivalent).
+    let plain = "Just a normal description.\n";
+    assert_eq!(utils::convert_blockquote_admonitions(plain), plain);
+}

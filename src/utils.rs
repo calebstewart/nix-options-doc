@@ -78,6 +78,58 @@ pub fn convert_admonitions(text: &str) -> String {
     result.to_string()
 }
 
+/// Converts a blockquote whose first line starts with a bold admonition
+/// keyword (`> **Warning:** ...`) into a GitHub-style admonition.
+///
+/// This is a common informal convention in hand-written Nix option
+/// descriptions (outside nixpkgs' own Pandoc-based documentation
+/// tooling) that neither `convert_admonitions` (which looks for
+/// `::: {.type}` fences) nor comrak's GFM alerts extension (which looks
+/// for `> [!TYPE]`) recognizes on its own, so it would otherwise render
+/// as a plain, unstyled blockquote instead of a proper admonition box.
+///
+/// # Arguments
+/// - `text`: The text potentially containing such blockquotes.
+///
+/// # Returns
+/// A string with recognized blockquotes rewritten to `> [!TYPE]` form.
+pub fn convert_blockquote_admonitions(text: &str) -> String {
+    static PREFIX_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?im)^>\s*\*\*(note|warning|important|tip|caution)\.?:?\*\*\s*").unwrap()
+    });
+
+    // Leave the text completely untouched when there's nothing to
+    // convert, rather than rebuilding it line-by-line regardless: that
+    // rebuild loses the distinction between a trailing newline and none
+    // (`str::lines` doesn't yield a final empty element for one), which
+    // would otherwise shift every description by a stray newline.
+    if !PREFIX_REGEX.is_match(text) {
+        return text.to_string();
+    }
+
+    let mut rebuilt = text
+        .lines()
+        .map(|line| match PREFIX_REGEX.captures(line) {
+            Some(caps) => {
+                let kind = caps[1].to_uppercase();
+                let rest = &line[caps[0].len()..];
+                if rest.trim().is_empty() {
+                    format!("> [!{kind}]")
+                } else {
+                    format!("> [!{kind}]\n> {rest}")
+                }
+            }
+            None => line.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    if text.ends_with('\n') {
+        rebuilt.push('\n');
+    }
+    rebuilt
+}
+
 /// Cleans up Nix-specific formatting directives from description text
 /// and converts admonition blocks to GitHub-compatible format.
 ///
@@ -93,6 +145,7 @@ pub fn clean_description(text: &str) -> String {
 
     // Apply both transformations
     let cleaned = DIRECTIVE_REGEX.replace_all(text, "$1").to_string();
+    let cleaned = convert_blockquote_admonitions(&cleaned);
     convert_admonitions(&cleaned)
 }
 
