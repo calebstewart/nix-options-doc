@@ -198,6 +198,15 @@ pub struct OptionDoc {
     /// An example value for the option, if provided
     pub example: Option<String>,
 
+    /// For a `mkRenamedOptionModule` shim entry, the bare config path
+    /// (no `options.` prefix) of the option it was renamed to. `None`
+    /// for every other option. Kept separate from `description` (which
+    /// already mentions this in prose) so the new option's anchor link
+    /// can be resolved once `--strip-prefix` is known (see
+    /// `filter_options`), rather than baked in at parse time when it
+    /// isn't yet.
+    pub renamed_to: Option<String>,
+
     /// The source location(s) where this option is declared
     pub declarations: Vec<Declaration>,
 }
@@ -257,8 +266,8 @@ pub fn filter_options(options: &[OptionDoc], cli: &Cli) -> Vec<OptionDoc> {
     }
 
     // Strip prefix: `options.*`
-    if let Some(strip_prefix) = &cli.filter.strip_prefix {
-        let prefix = if strip_prefix.is_empty() {
+    let strip_prefix_pattern = cli.filter.strip_prefix.as_ref().map(|strip_prefix| {
+        if strip_prefix.is_empty() {
             "options.".to_string()
         } else if strip_prefix.starts_with("options.") {
             if strip_prefix.ends_with('.') {
@@ -268,12 +277,38 @@ pub fn filter_options(options: &[OptionDoc], cli: &Cli) -> Vec<OptionDoc> {
             }
         } else {
             format!("options.{}.", strip_prefix)
-        };
+        }
+    });
 
+    if let Some(prefix) = &strip_prefix_pattern {
         log::debug!("Stripping prefix `{}` from the generated document", prefix);
 
         for opt in &mut filtered {
-            opt.name = opt.name.replace(&prefix, "");
+            opt.name = opt.name.replace(prefix, "");
+        }
+    }
+
+    // A `mkRenamedOptionModule` shim's description mentions the new
+    // option by its bare config path (e.g. "Use `services.newName`
+    // instead."), left unlinked at parse time since the new option's
+    // actual anchor depends on whatever --strip-prefix ends up doing to
+    // it, and that isn't known until here. Resolve it now, using the
+    // exact same stripping that was just applied to every real option's
+    // name, so the two stay consistent regardless of whether
+    // --strip-prefix was used.
+    for opt in &mut filtered {
+        let Some(target) = opt.renamed_to.clone() else {
+            continue;
+        };
+        let mut target_name = format!("options.{target}");
+        if let Some(prefix) = &strip_prefix_pattern {
+            target_name = target_name.replace(prefix, "");
+        }
+        let anchor = utils::anchor_slug(&target_name);
+        if let Some(description) = &mut opt.description {
+            let bare = format!("`{target}`");
+            let linked = format!("[`{target}`](#{anchor})");
+            *description = description.replacen(&bare, &linked, 1);
         }
     }
 

@@ -103,6 +103,7 @@ fn test_markdown_generation() -> Result<(), Box<dyn std::error::Error + Send + S
             nix_type: "boolean".to_string(),
             default_value: Some("false".to_string()),
             example: None,
+            renamed_to: None,
             declarations: vec![Declaration {
                 file_path: "test.nix".to_string(),
                 line_number: 1,
@@ -116,6 +117,7 @@ fn test_markdown_generation() -> Result<(), Box<dyn std::error::Error + Send + S
             nix_type: "lib.types.str".to_string(),
             default_value: None,
             example: None,
+            renamed_to: None,
             declarations: vec![Declaration {
                 file_path: "test.nix".to_string(),
                 line_number: 2,
@@ -858,6 +860,7 @@ fn test_markdown_also_declared_in() -> Result<(), Box<dyn std::error::Error + Se
         nix_type: "boolean".to_string(),
         default_value: Some("false".to_string()),
         example: None,
+        renamed_to: None,
         declarations: vec![
             Declaration {
                 file_path: "a.nix".to_string(),
@@ -1019,6 +1022,12 @@ fn test_deprecated_options() -> Result<(), Box<dyn std::error::Error + Send + Sy
         .find(|o| o.name == "options.services.oldName")
         .expect("renamed option shim should be found");
     assert_eq!(renamed.nix_type, "renamed option");
+    assert_eq!(renamed.renamed_to.as_deref(), Some("services.newName"));
+    // collect_options alone leaves the mention as plain text - turning
+    // it into a link happens in filter_options (see
+    // test_renamed_option_link_resolution), since the target's actual
+    // anchor depends on whether --strip-prefix is used, which isn't
+    // known yet at this point.
     assert!(renamed
         .description
         .as_deref()
@@ -1239,6 +1248,102 @@ in
     assert!(options
         .iter()
         .any(|o| o.name == "options.programs.git.includes.<name>.path"));
+
+    Ok(())
+}
+
+/// Tests that `anchor_slug` produces a stable, name-derived slug, and
+/// that Markdown output places an explicit anchor ahead of each
+/// heading using that same slug - so a link built against the HTML
+/// output's `id` and one built against the Markdown output's anchor
+/// land on the same option, and both stay stable across regenerations.
+#[test]
+fn test_anchor_slug_and_markdown_anchor() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    assert_eq!(
+        utils::anchor_slug("services.nginx.enable"),
+        "services-nginx-enable"
+    );
+    assert_eq!(utils::anchor_slug("a:b.c"), "a-b-c");
+
+    let options = vec![OptionDoc {
+        name: "services.nginx.enable".to_string(),
+        description: None,
+        nix_type: "boolean".to_string(),
+        default_value: Some("false".to_string()),
+        example: None,
+        renamed_to: None,
+        declarations: vec![Declaration {
+            file_path: "nginx.nix".to_string(),
+            line_number: 1,
+            description: None,
+            condition: None,
+        }],
+    }];
+
+    let markdown = generate_markdown(&options)?;
+    assert!(markdown.contains("<a id=\"services-nginx-enable\"></a>"));
+    // The anchor comes before the heading it belongs to.
+    let anchor_pos = markdown.find("<a id=\"services-nginx-enable\"></a>").unwrap();
+    let heading_pos = markdown
+        .find("## [`services.nginx.enable`](nginx.nix#L1)")
+        .unwrap();
+    assert!(anchor_pos < heading_pos);
+
+    Ok(())
+}
+
+/// Tests that filter_options resolves a renamed-option shim's mention
+/// into a real link to the new option's anchor, and that the link stays
+/// correct whether or not --strip-prefix is used - the whole point being
+/// that the two must never drift apart, since a link built against the
+/// unstripped anchor scheme would 404 once --strip-prefix changes what
+/// the real target's anchor actually is.
+#[test]
+fn test_renamed_option_link_resolution() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let temp_dir = TempDir::new()?;
+    create_test_file(
+        temp_dir.path(),
+        "deprecations.nix",
+        r#"
+{
+  imports = [
+    (lib.mkRenamedOptionModule [ "services" "oldName" ] [ "services" "newName" ])
+  ];
+}
+"#,
+    )?;
+
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
+
+    // Without --strip-prefix, the target keeps its options. prefix, so
+    // the link's anchor needs it too.
+    let cli = Cli::parse_from(["program"]);
+    let filtered = filter_options(&options, &cli);
+    let renamed = filtered
+        .iter()
+        .find(|o| o.name == "options.services.oldName")
+        .expect("renamed option shim should be found");
+    assert!(renamed
+        .description
+        .as_deref()
+        .unwrap()
+        .contains("Use [`services.newName`](#options-services-newName) instead."));
+
+    // With --strip-prefix (the default, stripping "options."), the
+    // target's own anchor loses that prefix once its name is stripped -
+    // the link must follow, not point at the now-nonexistent
+    // options-prefixed anchor.
+    let cli = Cli::parse_from(["program", "--strip-prefix"]);
+    let filtered = filter_options(&options, &cli);
+    let renamed = filtered
+        .iter()
+        .find(|o| o.name == "services.oldName")
+        .expect("renamed option shim should be found, with options. stripped from its own name");
+    assert!(renamed
+        .description
+        .as_deref()
+        .unwrap()
+        .contains("Use [`services.newName`](#services-newName) instead."));
 
     Ok(())
 }

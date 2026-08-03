@@ -17,6 +17,18 @@ use crate::OptionDoc;
 
 static VAR_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\$\{([^}]+)\}").unwrap());
 
+/// Produces a stable per-option anchor slug from its full dotted name
+/// (e.g. `services.nginx.enable` -> `services-nginx-enable`).
+///
+/// Used as both the `id` HTML output gives each option and the target
+/// of `#`-links into Markdown output (see `generate::markdown`), so a
+/// link generated against one output format lands on the same option in
+/// the other, and so it stays the same across regenerations rather than
+/// depending on a renderer's own heading-slug algorithm.
+pub fn anchor_slug(name: &str) -> String {
+    name.replace(['.', ':'], "-")
+}
+
 /// Replaces dynamic variables in the given text using the provided replacements.
 ///
 /// # Arguments

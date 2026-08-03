@@ -1,3 +1,4 @@
+use crate::utils::anchor_slug;
 use crate::OptionDoc;
 use std::fmt::Write;
 
@@ -22,9 +23,15 @@ pub fn generate_markdown(
             .split_first()
             .expect("an option always has at least one declaration");
 
+        // An explicit anchor ahead of the heading, rather than relying
+        // on whatever heading-slug algorithm the renderer displaying
+        // this file happens to use - which varies by tool and isn't
+        // guaranteed to match the `id` HTML output gives the same
+        // option, or to stay the same across regenerations.
+        writeln!(output, "\n<a id=\"{}\"></a>", anchor_slug(&option.name))?;
         writeln!(
             output,
-            "\n## [`{}`]({}#L{})",
+            "## [`{}`]({}#L{})",
             option.name, primary.file_path, primary.line_number
         )?;
 

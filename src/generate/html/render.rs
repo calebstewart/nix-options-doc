@@ -2,6 +2,7 @@
 //! `OptionDoc` into its `<article class="option">` block plus its entry
 //! in the client-side search index.
 
+use crate::utils::anchor_slug;
 use crate::OptionDoc;
 use comrak::{markdown_to_html, Options as ComrakOptions};
 
@@ -113,7 +114,7 @@ pub(super) fn render_option(
     option: &OptionDoc,
     comrak_options: &ComrakOptions,
 ) -> (String, (&'static str, &'static str)) {
-    let slug = option.name.replace(['.', ':'], "-");
+    let slug = anchor_slug(&option.name);
     let (category_class, category_label) = classify_type(&option.nix_type);
     let (prefix, leaf) = split_leaf(&option.name);
 

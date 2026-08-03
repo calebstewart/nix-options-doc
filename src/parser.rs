@@ -379,6 +379,7 @@ fn parse_attrset(
                         nix_type: "boolean".to_string(),
                         default_value: Some(String::from("false")),
                         example: Some(String::from("true")),
+                        renamed_to: None,
                         declarations: vec![Declaration {
                             file_path: file_path.to_string(),
                             line_number: get_line_number(node, source_text),
@@ -437,6 +438,7 @@ fn parse_attrset(
                         nix_type,
                         default_value,
                         example,
+                        renamed_to: None,
                         declarations: vec![Declaration {
                             file_path: file_path.to_string(),
                             line_number: get_line_number(node, source_text),
@@ -488,6 +490,7 @@ fn parse_attrset(
                                     nix_type: types::format_type(&freeform_type_node, aliases),
                                     default_value: None,
                                     example: None,
+                                    renamed_to: None,
                                     declarations: vec![Declaration {
                                         file_path: file_path.to_string(),
                                         line_number: get_line_number(node, source_text),
@@ -554,6 +557,7 @@ fn parse_attrset(
                         nix_type: "package".to_string(),
                         default_value,
                         example,
+                        renamed_to: None,
                         declarations: vec![Declaration {
                             file_path: file_path.to_string(),
                             line_number: get_line_number(node, source_text),
@@ -699,7 +703,15 @@ pub fn find_deprecations(
                         // text, since that's meant to be typed into a
                         // user's config as-is, where `options.` would be
                         // wrong.
-                        found.push(deprecation_option_doc(
+                        //
+                        // The link to the new option isn't built here:
+                        // --strip-prefix runs later (in filter_options)
+                        // and changes what the target's actual anchor
+                        // ends up being, so linking it here would go
+                        // stale the moment --strip-prefix is used.
+                        // renamed_to carries the bare target path for
+                        // filter_options to resolve once that's known.
+                        let mut option = deprecation_option_doc(
                             &format!("options.{old_path}"),
                             format!(
                                 "> [!WARNING]\n> This option was renamed. Use `{new_path}` instead."
@@ -707,7 +719,9 @@ pub fn find_deprecations(
                             "renamed option",
                             file_path,
                             get_line_number(node, source_text),
-                        ));
+                        );
+                        option.renamed_to = Some(new_path);
+                        found.push(option);
                     }
                     // `resolve_call` already unwinds the whole curried
                     // application chain, so the nested Apply nodes making
@@ -765,6 +779,7 @@ fn deprecation_option_doc(
         nix_type: nix_type.to_string(),
         default_value: None,
         example: None,
+        renamed_to: None,
         declarations: vec![Declaration {
             file_path: file_path.to_string(),
             line_number,
