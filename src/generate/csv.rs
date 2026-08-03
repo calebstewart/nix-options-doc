@@ -20,8 +20,7 @@ pub fn generate_csv(options: &[OptionDoc]) -> Result<String, NixDocError> {
         "Default",
         "Example",
         "Description",
-        "FilePath",
-        "LineNumber",
+        "Declarations",
     ]) {
         return Err(NixDocError::Csv(err.to_string()));
     }
@@ -35,6 +34,13 @@ pub fn generate_csv(options: &[OptionDoc]) -> Result<String, NixDocError> {
             .map(|d| d.replace('\n', " ").replace('\r', ""))
             .unwrap_or_else(|| "-".to_string());
 
+        let declarations = option
+            .declarations
+            .iter()
+            .map(|decl| format!("{}:{}", decl.file_path, decl.line_number))
+            .collect::<Vec<_>>()
+            .join("; ");
+
         // Handle CSV errors directly
         if let Err(err) = wtr.write_record([
             &option.name,
@@ -42,8 +48,7 @@ pub fn generate_csv(options: &[OptionDoc]) -> Result<String, NixDocError> {
             default,
             option.example.as_deref().unwrap_or("-"),
             &description,
-            &option.file_path,
-            &option.line_number.to_string(),
+            &declarations,
         ]) {
             return Err(NixDocError::Csv(err.to_string()));
         }

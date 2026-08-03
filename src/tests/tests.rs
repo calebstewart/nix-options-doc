@@ -103,8 +103,11 @@ fn test_markdown_generation() -> Result<(), Box<dyn std::error::Error + Send + S
             nix_type: "boolean".to_string(),
             default_value: Some("false".to_string()),
             example: None,
-            file_path: "test.nix".to_string(),
-            line_number: 1,
+            declarations: vec![Declaration {
+                file_path: "test.nix".to_string(),
+                line_number: 1,
+                description: None,
+            }],
         },
         OptionDoc {
             name: "options.test.opt2".to_string(),
@@ -112,8 +115,11 @@ fn test_markdown_generation() -> Result<(), Box<dyn std::error::Error + Send + S
             nix_type: "lib.types.str".to_string(),
             default_value: None,
             example: None,
-            file_path: "test.nix".to_string(),
-            line_number: 2,
+            declarations: vec![Declaration {
+                file_path: "test.nix".to_string(),
+                line_number: 2,
+                description: None,
+            }],
         },
     ];
 
@@ -127,10 +133,7 @@ fn test_markdown_generation() -> Result<(), Box<dyn std::error::Error + Send + S
     assert!(markdown.contains("Test option 1"));
     assert!(markdown.contains("Test option 2"));
     assert!(markdown.contains("**Type:** `boolean`"));
-    // The type string might be transformed by the formatter
-    assert!(
-        markdown.contains("**Type:**") && (markdown.contains("string") || markdown.contains("str"))
-    );
+    assert!(markdown.contains("**Type:** `lib.types.str`"));
     assert!(markdown.contains("**Default:** `false`"));
 
     // Test sorted output
@@ -785,6 +788,97 @@ fn test_mk_package_option() -> Result<(), Box<dyn std::error::Error + Send + Syn
         overridden.default_value,
         Some("pkgs.python3Packages.flask".to_string())
     );
+
+    Ok(())
+}
+
+/// Tests that an option declared more than once (e.g. across separate
+/// module fragments) keeps all of its declarations instead of silently
+/// dropping every one after the first.
+#[test]
+fn test_multiple_declarations_are_merged() -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+{
+    let temp_dir = TempDir::new()?;
+    create_test_file(
+        temp_dir.path(),
+        "a.nix",
+        r#"
+{
+  options.test.shared = lib.mkOption {
+    type = lib.types.bool;
+    default = false;
+  };
+}
+"#,
+    )?;
+    create_test_file(
+        temp_dir.path(),
+        "b.nix",
+        r#"
+{
+  options.test.shared = lib.mkOption {
+    type = lib.types.bool;
+    default = false;
+  };
+}
+"#,
+    )?;
+
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
+    let shared: Vec<_> = options
+        .iter()
+        .filter(|o| o.name == "options.test.shared")
+        .collect();
+
+    assert_eq!(shared.len(), 1, "should merge into a single entry");
+    assert_eq!(shared[0].declarations.len(), 2, "should keep both declarations");
+
+    let files: std::collections::HashSet<_> = shared[0]
+        .declarations
+        .iter()
+        .map(|d| d.file_path.as_str())
+        .collect();
+    assert!(files.contains("a.nix"));
+    assert!(files.contains("b.nix"));
+
+    Ok(())
+}
+
+/// Tests that Markdown rendering links the heading to the first
+/// declaration and lists any others under "Also declared in:", showing
+/// a declaration's own description only when it differs from the
+/// primary one.
+#[test]
+fn test_markdown_also_declared_in() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let options = vec![OptionDoc {
+        name: "options.test.shared".to_string(),
+        description: Some("Primary description.".to_string()),
+        nix_type: "boolean".to_string(),
+        default_value: Some("false".to_string()),
+        example: None,
+        declarations: vec![
+            Declaration {
+                file_path: "a.nix".to_string(),
+                line_number: 1,
+                description: None,
+            },
+            Declaration {
+                file_path: "b.nix".to_string(),
+                line_number: 5,
+                description: Some("Different description in b.nix.".to_string()),
+            },
+        ],
+    }];
+
+    let markdown = generate_markdown(&options)?;
+
+    // Heading links to the first (primary) declaration.
+    assert!(markdown.contains("## [`options.test.shared`](a.nix#L1)"));
+    // The second declaration is listed separately, with its own
+    // (differing) description shown alongside it.
+    assert!(markdown.contains("**Also declared in:**"));
+    assert!(markdown.contains("[`b.nix`](b.nix#L5)"));
+    assert!(markdown.contains("Different description in b.nix."));
 
     Ok(())
 }

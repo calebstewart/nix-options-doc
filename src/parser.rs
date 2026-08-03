@@ -7,7 +7,7 @@
 use crate::nix_call::{find_attr, resolve_call};
 use crate::types;
 use crate::utils::{apply_replacements, clean_description, clean_literal_expr, custom_dedent};
-use crate::OptionDoc;
+use crate::{Declaration, OptionDoc};
 use rnix::ast;
 use rnix::{SyntaxKind, SyntaxNode};
 use rowan::ast::AstNode;
@@ -217,8 +217,11 @@ fn parse_attrset(
                         nix_type: "boolean".to_string(),
                         default_value: Some(String::from("false")),
                         example: Some(String::from("true")),
-                        file_path: file_path.to_string(),
-                        line_number: get_line_number(node, source_text),
+                        declarations: vec![Declaration {
+                            file_path: file_path.to_string(),
+                            line_number: get_line_number(node, source_text),
+                            description: None,
+                        }],
                     });
                 }
                 "mkOption" => {
@@ -271,8 +274,11 @@ fn parse_attrset(
                         nix_type,
                         default_value,
                         example,
-                        file_path: file_path.to_string(),
-                        line_number: get_line_number(node, source_text),
+                        declarations: vec![Declaration {
+                            file_path: file_path.to_string(),
+                            line_number: get_line_number(node, source_text),
+                            description: None,
+                        }],
                     });
 
                     // Statically-analysable inline submodules: recurse into
@@ -356,8 +362,11 @@ fn parse_attrset(
                         nix_type: "package".to_string(),
                         default_value,
                         example,
-                        file_path: file_path.to_string(),
-                        line_number: get_line_number(node, source_text),
+                        declarations: vec![Declaration {
+                            file_path: file_path.to_string(),
+                            line_number: get_line_number(node, source_text),
+                            description: None,
+                        }],
                     });
                 }
                 _ => {

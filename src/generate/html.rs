@@ -169,6 +169,10 @@ pub fn generate_html(options: &[OptionDoc]) -> Result<String, NixDocError> {
     for option in options {
         // Create a slug for the option ID from the name
         let slug = option.name.replace(['.', ':'], "-");
+        let primary = option
+            .declarations
+            .first()
+            .expect("an option always has at least one declaration");
 
         // Start option section
         output.push_str(&format!(
@@ -176,8 +180,8 @@ pub fn generate_html(options: &[OptionDoc]) -> Result<String, NixDocError> {
         <h2><a href="{}#L{}" class="option-name">{}</a></h2>
 "#,
             html_escape::encode_text(&slug),
-            html_escape::encode_text(&option.file_path),
-            option.line_number,
+            html_escape::encode_text(&primary.file_path),
+            primary.line_number,
             html_escape::encode_text(&option.name)
         ));
 

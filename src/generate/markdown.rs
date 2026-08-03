@@ -15,11 +15,17 @@ pub fn generate_markdown(
     output.push_str("# NixOS Module Options\n\n");
 
     for option in options {
-        // Option name as heading with link
+        // The heading always links to the first-found declaration; any
+        // others are listed separately further down.
+        let (primary, other_declarations) = option
+            .declarations
+            .split_first()
+            .expect("an option always has at least one declaration");
+
         writeln!(
             output,
             "\n## [`{}`]({}#L{})",
-            option.name, option.file_path, option.line_number
+            option.name, primary.file_path, primary.line_number
         )?;
 
         // Description with preserved formatting
@@ -57,6 +63,20 @@ pub fn generate_markdown(
                 writeln!(output, "\n**Example:**\n\n```nix\n{}\n```", example)?;
             } else {
                 writeln!(output, "\n**Example:** `{}`", example)?;
+            }
+        }
+
+        if !other_declarations.is_empty() {
+            writeln!(output, "\n**Also declared in:**")?;
+            for decl in other_declarations {
+                writeln!(
+                    output,
+                    "- [`{}`]({}#L{})",
+                    decl.file_path, decl.file_path, decl.line_number
+                )?;
+                if let Some(alt_description) = &decl.description {
+                    writeln!(output, "  > {}", alt_description.replace('\n', "\n  > "))?;
+                }
             }
         }
     }

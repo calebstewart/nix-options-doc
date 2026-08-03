@@ -151,10 +151,27 @@ pub struct UtilityOptions {
     pub progress: bool,
 }
 
+/// A single source location where an option is declared.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Declaration {
+    /// The relative path to the file where the option is defined
+    pub file_path: String,
+
+    /// The line number where the option is defined in the file
+    pub line_number: usize,
+
+    /// This declaration's own description, populated only when an option
+    /// is declared more than once and this particular declaration's
+    /// description differs from the option's primary (first-found) one.
+    pub description: Option<String>,
+}
+
 /// Represents a documented NixOS module option.
 ///
 /// Contains all metadata about a single option including its name,
-/// type, description, default value, and source location.
+/// type, description, default value, and source location(s). An option
+/// may be declared more than once (e.g. re-declared across module
+/// fragments), so declarations is a list rather than a single location.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct OptionDoc {
     /// The full name of the option with dot notation
@@ -172,11 +189,8 @@ pub struct OptionDoc {
     /// An example value for the option, if provided
     pub example: Option<String>,
 
-    /// The relative path to the file where the option is defined
-    pub file_path: String,
-
-    /// The line number where the option is defined in the file
-    pub line_number: usize,
+    /// The source location(s) where this option is declared
+    pub declarations: Vec<Declaration>,
 }
 
 /// Filters the list of option documentation entries based on CLI parameters.
@@ -263,7 +277,9 @@ pub fn filter_options(options: &[OptionDoc], cli: &Cli) -> Vec<OptionDoc> {
         };
 
         for opt in &mut filtered {
-            opt.file_path = format!("{}/{}", prefix, opt.file_path);
+            for decl in &mut opt.declarations {
+                decl.file_path = format!("{}/{}", prefix, decl.file_path);
+            }
         }
     }
 
@@ -405,6 +421,13 @@ pub fn collect_options(
         }
     }
 
+    // `WalkDir` does not guarantee a sorted iteration order (it follows
+    // filesystem readdir order), but processing order determines which
+    // declaration of a re-declared option is treated as "primary" (see
+    // `collect_options`'s merge step below). Sort for a deterministic,
+    // reproducible result across runs and machines.
+    nix_files.sort();
+
     // Set up progress bar
     let progress_bar = if show_progress {
         let pb = indicatif::ProgressBar::new(nix_files.len() as u64);
@@ -455,14 +478,35 @@ pub fn collect_options(
 
     log::debug!("Total options found: {}", options.len());
 
-    // Post-process: Deduplicate options
-    let mut unique_options = Vec::new();
-    let mut seen_names = std::collections::HashSet::new();
+    // Post-process: merge options declared more than once (e.g. the same
+    // option name defined in separate module fragments) into a single
+    // entry with all of their declarations, rather than silently
+    // dropping every declaration after the first.
+    let mut unique_options: Vec<OptionDoc> = Vec::new();
+    let mut index_by_name: HashMap<String, usize> = HashMap::new();
 
     for option in options {
-        if !seen_names.contains(&option.name) {
-            seen_names.insert(option.name.clone());
-            unique_options.push(option);
+        match index_by_name.get(&option.name) {
+            Some(&idx) => {
+                // Only carry a per-declaration description when it
+                // actually differs from the primary (first-found) one,
+                // so callers don't need to repeat it for the common case.
+                let alt_description = if unique_options[idx].description != option.description {
+                    option.description.clone()
+                } else {
+                    None
+                };
+                for mut decl in option.declarations {
+                    decl.description = alt_description.clone();
+                    if !unique_options[idx].declarations.contains(&decl) {
+                        unique_options[idx].declarations.push(decl);
+                    }
+                }
+            }
+            None => {
+                index_by_name.insert(option.name.clone(), unique_options.len());
+                unique_options.push(option);
+            }
         }
     }
 
