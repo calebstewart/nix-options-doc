@@ -36,6 +36,10 @@ pub enum OutputFormat {
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 pub struct Cli {
+    /// Generate a shell completion script for the given shell and exit
+    #[arg(long, value_enum, exclusive = true)]
+    pub generate_completions: Option<clap_complete::Shell>,
+
     #[command(flatten)]
     pub io: IoOptions,
 

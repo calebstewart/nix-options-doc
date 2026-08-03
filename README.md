@@ -30,6 +30,7 @@ But this also means: since nothing is evaluated, values that depend on runtime c
 - **Robust Error Handling**: Detailed error messages and graceful recovery from parsing issues
 - **Parallel Processing**: Fast performance with multi-threaded file processing
 - **Progress Visibility**: Optional progress bar for monitoring documentation generation
+- **Shell Completions**: Generate completion scripts for bash, zsh, fish, elvish, and powershell
 
 ## Installation
 
@@ -130,6 +131,7 @@ $ nix-options-doc --path https://github.com/user/repo.git \
 Usage: nix-options-doc [OPTIONS]
 
 Options:
+      --generate-completions <SHELL>  Generate a shell completion script and exit [possible values: bash, elvish, fish, powershell, zsh]
   -p, --path <PATH>                Local path or remote git repository URL [default: .]
   -o, --out <OUT>                  Path to output file or 'stdout' [default: stdout]
   -f, --format <FORMAT>            Output format [default: markdown] [possible values: markdown, json, html, csv]
@@ -150,6 +152,21 @@ Options:
   -h, --help                       Print help
   -V, --version                    Print version
 ```
+
+### Shell Completions
+
+```bash
+# Bash (add to ~/.bashrc, or write to a file sourced from there)
+$ nix-options-doc --generate-completions bash > /etc/bash_completion.d/nix-options-doc
+
+# Zsh (needs to be somewhere on $fpath)
+$ nix-options-doc --generate-completions zsh > ~/.zsh/completions/_nix-options-doc
+
+# Fish
+$ nix-options-doc --generate-completions fish > ~/.config/fish/completions/nix-options-doc.fish
+```
+
+`elvish` and `powershell` are also supported.
 
 ## Output Examples
 

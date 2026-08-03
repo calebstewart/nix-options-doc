@@ -15,6 +15,7 @@ publish = false
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
+clap_complete = "4.5"
 comrak = "0.54"
 csv = "1.3"
 env_logger = "0.11"

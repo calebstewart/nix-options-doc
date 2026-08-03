@@ -1,4 +1,4 @@
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use nix_options_doc::{collect_options, filter_options, generate_doc, prepare_path, Cli};
 use std::collections::HashMap;
 use std::fs;
@@ -15,6 +15,13 @@ use std::io::Write;
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     env_logger::init();
     let cli = Cli::parse();
+
+    if let Some(shell) = cli.generate_completions {
+        let mut cmd = Cli::command();
+        let name = cmd.get_name().to_string();
+        clap_complete::generate(shell, &mut cmd, name, &mut std::io::stdout());
+        return Ok(());
+    }
 
     log::info!("Starting {}", env!("CARGO_PKG_NAME"));
     log::debug!("Input path: {}", cli.io.path);
