@@ -788,3 +788,51 @@ fn test_mk_package_option() -> Result<(), Box<dyn std::error::Error + Send + Syn
 
     Ok(())
 }
+
+/// Tests that options declared entirely through a top-level `with lib;`
+/// (the common home-manager style, wrapping the whole module body rather
+/// than just the `options` attrset) are still found, including nested
+/// `with types;` inside a type expression and `mkPackageOption` used
+/// without a `lib.`/`pkgs.` prefix.
+#[test]
+fn test_top_level_with_lib() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let temp_dir = TempDir::new()?;
+    let content = r#"
+{ config, lib, pkgs, ... }:
+with lib;
+{
+  options.foo = {
+    enable = mkEnableOption "foo";
+    bar = mkOption {
+      type = with types; nullOr (listOf str);
+      default = null;
+      description = "A list of strings, or null.";
+    };
+    pkg = mkPackageOption pkgs "foo" { };
+  };
+}
+"#;
+    create_test_file(temp_dir.path(), "module.nix", content)?;
+
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
+
+    let enable = options
+        .iter()
+        .find(|o| o.name == "options.foo.enable")
+        .expect("mkEnableOption under top-level `with lib;` should be found");
+    assert_eq!(enable.nix_type, "boolean");
+
+    let bar = options
+        .iter()
+        .find(|o| o.name == "options.foo.bar")
+        .expect("mkOption with a nested `with types;` type should be found");
+    assert_eq!(bar.nix_type, "null or list of string");
+
+    let pkg = options
+        .iter()
+        .find(|o| o.name == "options.foo.pkg")
+        .expect("mkPackageOption under top-level `with lib;` should be found");
+    assert_eq!(pkg.nix_type, "package");
+
+    Ok(())
+}
