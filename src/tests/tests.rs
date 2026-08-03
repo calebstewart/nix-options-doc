@@ -75,7 +75,7 @@ fn test_complex_option_parsing() -> Result<(), Box<dyn std::error::Error + Send 
         .iter()
         .find(|o| o.name == "options.test.complex.stringOpt")
         .unwrap();
-    assert_eq!(string_opt.nix_type.to_string(), "lib.types.str");
+    assert_eq!(string_opt.nix_type.to_string(), "string");
     assert_eq!(string_opt.description, Some("A string option".to_string()));
     assert_eq!(string_opt.default_value, Some("\"test\"".to_string()));
 
@@ -83,7 +83,7 @@ fn test_complex_option_parsing() -> Result<(), Box<dyn std::error::Error + Send 
         .iter()
         .find(|o| o.name == "options.test.complex.nested.value")
         .unwrap();
-    assert_eq!(nested_opt.nix_type.to_string(), "lib.types.int");
+    assert_eq!(nested_opt.nix_type.to_string(), "signed integer");
     assert_eq!(
         nested_opt.description,
         Some("A nested number option".to_string())
@@ -207,13 +207,10 @@ fn test_multiline_description_parsing() -> Result<(), Box<dyn std::error::Error 
     assert_eq!(sorted_options[0].name, "options.test.complex.packages");
     assert_eq!(sorted_options[1].name, "options.test.complex.values");
 
-    assert_eq!(
-        sorted_options[0].nix_type.to_string(),
-        "with lib.types; listOf str"
-    );
+    assert_eq!(sorted_options[0].nix_type.to_string(), "list of string");
     assert_eq!(
         sorted_options[1].nix_type.to_string(),
-        "with lib.types; listOf int"
+        "list of signed integer"
     );
 
     // Check multi-line description - trim any extra whitespace at beginning/end
@@ -578,4 +575,216 @@ This is a description with `example` and an admonition:
 "#;
 
     assert_eq!(utils::clean_description(input), expected);
+}
+
+/// Tests that common type combinators are formatted into human-readable
+/// descriptions instead of being dumped as raw source text.
+#[test]
+fn test_type_formatter_combinators() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let temp_dir = TempDir::new()?;
+    let content = r#"
+{
+  options.test = {
+    a = lib.mkOption { type = lib.types.nullOr lib.types.bool; };
+    b = lib.mkOption { type = lib.types.listOf lib.types.str; };
+    c = lib.mkOption { type = lib.types.attrsOf lib.types.int; };
+    d = lib.mkOption { type = lib.types.either lib.types.str lib.types.int; };
+    e = lib.mkOption { type = lib.types.enum [ "a" "b" "c" ]; };
+    f = lib.mkOption { type = lib.types.functionTo lib.types.str; };
+  };
+}
+"#;
+    create_test_file(temp_dir.path(), "types.nix", content)?;
+
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
+    let find = |name: &str| {
+        options
+            .iter()
+            .find(|o| o.name == format!("options.test.{name}"))
+            .unwrap()
+            .nix_type
+            .clone()
+    };
+
+    assert_eq!(find("a"), "null or boolean");
+    assert_eq!(find("b"), "list of string");
+    assert_eq!(find("c"), "attribute set of signed integer");
+    assert_eq!(find("d"), "string or signed integer");
+    assert_eq!(find("e"), "one of \"a\", \"b\", \"c\"");
+    assert_eq!(find("f"), "function that evaluates to string");
+
+    Ok(())
+}
+
+/// Tests that inline submodules (including behind `attrsOf`/`listOf`) are
+/// recursed into so their nested options show up in the output, using a
+/// `<name>` placeholder segment for container types.
+#[test]
+fn test_inline_submodule_recursion() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let temp_dir = TempDir::new()?;
+    let content = r#"
+{
+  options.test.settings = lib.mkOption {
+    type = lib.types.attrsOf (lib.types.submodule {
+      options = {
+        weight = lib.mkOption {
+          type = lib.types.int;
+          default = 1;
+          description = "The weight.";
+        };
+      };
+    });
+    default = { };
+    description = "Per-entry settings.";
+  };
+
+  options.test.server = lib.mkOption {
+    type = lib.types.submodule {
+      options = {
+        host = lib.mkOption {
+          type = lib.types.str;
+          description = "The host.";
+        };
+      };
+    };
+    description = "Server config.";
+  };
+}
+"#;
+    create_test_file(temp_dir.path(), "submodule.nix", content)?;
+
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
+
+    assert!(options
+        .iter()
+        .any(|o| o.name == "options.test.settings" && o.nix_type == "attribute set of submodule"));
+    let weight = options
+        .iter()
+        .find(|o| o.name == "options.test.settings.<name>.weight")
+        .expect("nested attrsOf-submodule option should be present");
+    assert_eq!(weight.nix_type, "signed integer");
+    assert_eq!(weight.default_value, Some("1".to_string()));
+
+    // A non-container submodule's nested options are not placed behind
+    // a `<name>` placeholder.
+    let host = options
+        .iter()
+        .find(|o| o.name == "options.test.server.host")
+        .expect("nested plain-submodule option should be present");
+    assert_eq!(host.nix_type, "string");
+
+    Ok(())
+}
+
+/// Tests that `mkDefault`/`mkForce`/`mkIf` wrappers around a default value
+/// are unwrapped to the guarded value rather than shown as raw source text.
+#[test]
+fn test_default_wrapper_unwrapping() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let temp_dir = TempDir::new()?;
+    let content = r#"
+{
+  options.test = {
+    a = lib.mkOption {
+      type = lib.types.str;
+      default = lib.mkDefault "hello";
+    };
+    b = lib.mkOption {
+      type = lib.types.int;
+      default = lib.mkIf true 8080;
+    };
+    c = lib.mkOption {
+      type = lib.types.int;
+      default = lib.mkForce 42;
+    };
+  };
+}
+"#;
+    create_test_file(temp_dir.path(), "wrappers.nix", content)?;
+
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
+    let find = |name: &str| {
+        options
+            .iter()
+            .find(|o| o.name == format!("options.test.{name}"))
+            .unwrap()
+            .default_value
+            .clone()
+    };
+
+    assert_eq!(find("a"), Some("\"hello\"".to_string()));
+    assert_eq!(find("b"), Some("8080".to_string()));
+    assert_eq!(find("c"), Some("42".to_string()));
+
+    Ok(())
+}
+
+/// Tests that calls through a locally-aliased binding (`let mkOpt =
+/// lib.mkOption; in ...`) are still recognized as `mkOption`.
+#[test]
+fn test_alias_resolution() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let temp_dir = TempDir::new()?;
+    let content = r#"
+{ lib, ... }:
+let
+  mkOpt = lib.mkOption;
+in
+{
+  options.test.aliased = mkOpt {
+    type = lib.types.bool;
+    default = false;
+    description = "An option declared through an alias.";
+  };
+}
+"#;
+    create_test_file(temp_dir.path(), "alias.nix", content)?;
+
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
+    let aliased = options
+        .iter()
+        .find(|o| o.name == "options.test.aliased")
+        .expect("option declared via aliased mkOption should be recognized");
+
+    assert_eq!(aliased.nix_type, "boolean");
+    assert_eq!(aliased.default_value, Some("false".to_string()));
+
+    Ok(())
+}
+
+/// Tests `mkPackageOption`, both with and without overrides.
+#[test]
+fn test_mk_package_option() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let temp_dir = TempDir::new()?;
+    let content = r#"
+{
+  options.test = {
+    plain = lib.mkPackageOption pkgs "hello" { };
+    withOverrides = lib.mkPackageOption pkgs "flask" {
+      default = [ "python3Packages" "flask" ];
+      example = "pkgs.python3Packages.flask";
+    };
+  };
+}
+"#;
+    create_test_file(temp_dir.path(), "package.nix", content)?;
+
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
+
+    let plain = options
+        .iter()
+        .find(|o| o.name == "options.test.plain")
+        .unwrap();
+    assert_eq!(plain.nix_type, "package");
+    assert_eq!(plain.default_value, Some("pkgs.hello".to_string()));
+    assert_eq!(plain.description, Some("The hello package to use.".to_string()));
+
+    let overridden = options
+        .iter()
+        .find(|o| o.name == "options.test.withOverrides")
+        .unwrap();
+    assert_eq!(
+        overridden.default_value,
+        Some("pkgs.python3Packages.flask".to_string())
+    );
+
+    Ok(())
 }

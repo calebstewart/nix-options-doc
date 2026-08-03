@@ -10,6 +10,7 @@ use textwrap::dedent;
 
 use std::path::{Path, PathBuf};
 
+use crate::nix_call::collect_aliases;
 use crate::parser;
 use crate::OptionDoc;
 
@@ -238,7 +239,15 @@ pub fn process_nix_file(
             };
 
             // Parse the file and get options
-            match parser::visit_node(&parse.syntax(), &relative_path, "", replacements, &content) {
+            let aliases = collect_aliases(&parse.syntax());
+            match parser::visit_node(
+                &parse.syntax(),
+                &relative_path,
+                "",
+                replacements,
+                &content,
+                &aliases,
+            ) {
                 Ok(file_options) => file_options,
                 Err(e) => {
                     log::error!("Error parsing file {}: {}", file_path.display(), e);

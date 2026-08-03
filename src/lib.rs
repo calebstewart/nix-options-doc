@@ -1,6 +1,8 @@
 pub mod error;
 pub mod generate;
+pub mod nix_call;
 pub mod parser;
+pub mod types;
 pub mod utils;
 
 use crate::error::NixDocError;
