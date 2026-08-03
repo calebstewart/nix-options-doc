@@ -511,8 +511,29 @@ fn parse_attrset(
                 options.append(&mut nested_options);
             }
         }
+        // Handle `let <bindings> in <attrset>` as an attribute value
+        // (e.g. `options.foo = let settingsFormat = ...; in { ... };`,
+        // used to define a local helper before the options attrset).
+        SyntaxKind::NODE_LET_IN => {
+            if let Some(body) = ast::LetIn::cast(node.clone()).and_then(|let_in| let_in.body()) {
+                let mut nested_options = parse_attrset(
+                    body.syntax(),
+                    file_path,
+                    current_prefix,
+                    replacements,
+                    source_text,
+                    aliases,
+                    condition,
+                )?;
+                options.append(&mut nested_options);
+            }
+        }
         _ => {
-            log::debug!("Unhandled node kind: {:?}", node.kind());
+            log::debug!(
+                "Unhandled node kind: {:?} at prefix {:?}",
+                node.kind(),
+                current_prefix
+            );
         }
     }
 

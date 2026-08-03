@@ -1116,3 +1116,34 @@ fn test_freeform_type() -> Result<(), Box<dyn std::error::Error + Send + Sync>> 
 
     Ok(())
 }
+
+/// Tests that `options.foo = let x = ...; in { ... };` (a local helper
+/// binding before the options attrset) is still walked into, instead of
+/// silently dropping every option inside it.
+#[test]
+fn test_let_in_attrset_value() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let temp_dir = TempDir::new()?;
+    let content = r#"
+{
+  options.test =
+    let
+      settingsFormat = { };
+    in
+    {
+      enable = lib.mkEnableOption "the test module";
+      port = lib.mkOption {
+        type = lib.types.port;
+        default = 8080;
+      };
+    };
+}
+"#;
+    create_test_file(temp_dir.path(), "letin.nix", content)?;
+
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
+
+    assert!(options.iter().any(|o| o.name == "options.test.enable"));
+    assert!(options.iter().any(|o| o.name == "options.test.port"));
+
+    Ok(())
+}
