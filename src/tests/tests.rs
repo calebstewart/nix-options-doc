@@ -1009,9 +1009,14 @@ fn test_deprecated_options() -> Result<(), Box<dyn std::error::Error + Send + Sy
 
     let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
 
+    // The shim's own name is prefixed with "options." to match how real
+    // options in the rest of the document are named (from the literal
+    // attrset structure, which by convention starts with "options"),
+    // even though mkRenamedOptionModule/mkRemovedOptionModule's own
+    // arguments are bare config paths.
     let renamed = options
         .iter()
-        .find(|o| o.name == "services.oldName")
+        .find(|o| o.name == "options.services.oldName")
         .expect("renamed option shim should be found");
     assert_eq!(renamed.nix_type, "renamed option");
     assert!(renamed
@@ -1022,7 +1027,7 @@ fn test_deprecated_options() -> Result<(), Box<dyn std::error::Error + Send + Sy
 
     let removed = options
         .iter()
-        .find(|o| o.name == "services.goneName")
+        .find(|o| o.name == "options.services.goneName")
         .expect("removed option shim should be found");
     assert_eq!(removed.nix_type, "removed option");
     assert!(removed
@@ -1033,7 +1038,7 @@ fn test_deprecated_options() -> Result<(), Box<dyn std::error::Error + Send + Sy
 
     let silently_removed = options
         .iter()
-        .find(|o| o.name == "services.silentlyGone")
+        .find(|o| o.name == "options.services.silentlyGone")
         .expect("removed option shim with an empty message should still be found");
     assert!(silently_removed
         .description

@@ -516,14 +516,27 @@ pub fn find_deprecations(
         if let Some((fn_name, args)) = resolve_call(node, aliases) {
             match fn_name.as_str() {
                 "mkRenamedOptionModule" => {
-                    if let (Some(old_name), Some(new_name)) = (
+                    if let (Some(old_path), Some(new_path)) = (
                         args.first().and_then(list_of_strings).map(|p| p.join(".")),
                         args.get(1).and_then(list_of_strings).map(|p| p.join(".")),
                     ) {
+                        // `mkRenamedOptionModule`'s arguments are bare
+                        // config paths (the same path used at both
+                        // `options.<path>` and `config.<path>`), but real
+                        // options in the rest of the document are named
+                        // from the literal attrset structure in the file,
+                        // which by convention starts with a literal
+                        // `options` key. Prefix the *entry's own name*
+                        // with `options.` to match that (and to keep
+                        // --strip-prefix's options. default working the
+                        // same way on both) - but not the "use X instead"
+                        // text, since that's meant to be typed into a
+                        // user's config as-is, where `options.` would be
+                        // wrong.
                         found.push(deprecation_option_doc(
-                            &old_name,
+                            &format!("options.{old_path}"),
                             format!(
-                                "> [!WARNING]\n> This option was renamed. Use `{new_name}` instead."
+                                "> [!WARNING]\n> This option was renamed. Use `{new_path}` instead."
                             ),
                             "renamed option",
                             file_path,
@@ -538,7 +551,7 @@ pub fn find_deprecations(
                     return found;
                 }
                 "mkRemovedOptionModule" => {
-                    if let Some(old_name) =
+                    if let Some(old_path) =
                         args.first().and_then(list_of_strings).map(|p| p.join("."))
                     {
                         let message = args
@@ -551,7 +564,7 @@ pub fn find_deprecations(
                             None => String::new(),
                         };
                         found.push(deprecation_option_doc(
-                            &old_name,
+                            &format!("options.{old_path}"),
                             format!("> [!WARNING]\n> This option has been removed.{detail}"),
                             "removed option",
                             file_path,
