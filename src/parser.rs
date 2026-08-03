@@ -382,12 +382,13 @@ fn parse_attrset(
                         if let Some((body, is_container)) =
                             types::find_submodule_body(&type_node, aliases)
                         {
+                            let nested_prefix = if is_container {
+                                format!("{}.<name>", current_prefix)
+                            } else {
+                                current_prefix.to_string()
+                            };
+
                             if let Some(options_attrset) = types::submodule_options_attrset(&body) {
-                                let nested_prefix = if is_container {
-                                    format!("{}.<name>", current_prefix)
-                                } else {
-                                    current_prefix.to_string()
-                                };
                                 let mut nested = parse_attrset(
                                     &options_attrset,
                                     file_path,
@@ -398,6 +399,31 @@ fn parse_attrset(
                                     condition,
                                 )?;
                                 options.append(&mut nested);
+                            }
+
+                            // `freeformType` marks a submodule as also
+                            // accepting undeclared options validated
+                            // against that type, alongside whatever's
+                            // explicitly listed in `options` - surface it
+                            // as a placeholder entry rather than silently
+                            // dropping it.
+                            if let Some(freeform_type_node) = types::find_freeform_type(&body) {
+                                options.push(OptionDoc {
+                                    name: format!("{}.<freeform>", nested_prefix),
+                                    description: Some(
+                                        "Any additional option accepted by this module's freeform type."
+                                            .to_string(),
+                                    ),
+                                    nix_type: types::format_type(&freeform_type_node, aliases),
+                                    default_value: None,
+                                    example: None,
+                                    declarations: vec![Declaration {
+                                        file_path: file_path.to_string(),
+                                        line_number: get_line_number(node, source_text),
+                                        description: None,
+                                        condition: condition.map(str::to_string),
+                                    }],
+                                });
                             }
                         }
                     }

@@ -161,20 +161,30 @@ pub(crate) fn unwrap_paren(node: &SyntaxNode) -> SyntaxNode {
 
 /// Resolves a submodule body expression (an inline attrset, or a lambda
 /// whose body is an attrset, e.g. `{ config, ... }: { options = ...; }`)
-/// down to the attrset node that may contain an `options = { ... };`
-/// binding.
-pub fn submodule_options_attrset(body: &SyntaxNode) -> Option<SyntaxNode> {
-    let attrset = match body.kind() {
-        SyntaxKind::NODE_ATTR_SET => body.clone(),
+/// down to the attrset node itself.
+fn resolve_submodule_attrset(body: &SyntaxNode) -> Option<SyntaxNode> {
+    match body.kind() {
+        SyntaxKind::NODE_ATTR_SET => Some(body.clone()),
         SyntaxKind::NODE_LAMBDA => {
             let lambda = ast::Lambda::cast(body.clone())?;
             match lambda.body()? {
-                Expr::AttrSet(set) => set.syntax().clone(),
-                _ => return None,
+                Expr::AttrSet(set) => Some(set.syntax().clone()),
+                _ => None,
             }
         }
-        _ => return None,
-    };
+        _ => None,
+    }
+}
 
-    find_attr(&attrset, "options")
+/// Finds the `options = { ... };` binding inside a submodule body.
+pub fn submodule_options_attrset(body: &SyntaxNode) -> Option<SyntaxNode> {
+    find_attr(&resolve_submodule_attrset(body)?, "options")
+}
+
+/// Finds the `freeformType = <type>;` binding inside a submodule body,
+/// if present - indicating the submodule also accepts undeclared options
+/// validated against that type, alongside whatever's explicitly declared
+/// in `options`.
+pub fn find_freeform_type(body: &SyntaxNode) -> Option<SyntaxNode> {
+    find_attr(&resolve_submodule_attrset(body)?, "freeformType")
 }

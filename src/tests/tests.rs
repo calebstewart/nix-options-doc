@@ -1065,3 +1065,54 @@ fn test_blockquote_admonition_conversion() {
     let plain = "Just a normal description.\n";
     assert_eq!(utils::convert_blockquote_admonitions(plain), plain);
 }
+
+/// Tests that `freeformType` on a submodule (with or without an explicit
+/// `options` attrset alongside it) surfaces as a `<freeform>` placeholder
+/// entry, rather than silently dropping the fact that undeclared options
+/// are also accepted there.
+#[test]
+fn test_freeform_type() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let temp_dir = TempDir::new()?;
+    let content = r#"
+{
+  options.test.settings = lib.mkOption {
+    type = lib.types.submodule {
+      freeformType = lib.types.attrsOf lib.types.str;
+      options = {
+        enable = lib.mkEnableOption "the setting";
+      };
+    };
+    default = { };
+  };
+
+  options.test.freeformOnly = lib.mkOption {
+    type = lib.types.submodule {
+      freeformType = lib.types.attrsOf lib.types.int;
+    };
+    default = { };
+  };
+}
+"#;
+    create_test_file(temp_dir.path(), "freeform.nix", content)?;
+
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
+
+    // The explicitly declared option is still found alongside freeformType.
+    assert!(options
+        .iter()
+        .any(|o| o.name == "options.test.settings.enable"));
+
+    let freeform = options
+        .iter()
+        .find(|o| o.name == "options.test.settings.<freeform>")
+        .expect("freeformType alongside explicit options should be surfaced");
+    assert_eq!(freeform.nix_type, "attribute set of string");
+
+    let freeform_only = options
+        .iter()
+        .find(|o| o.name == "options.test.freeformOnly.<freeform>")
+        .expect("freeformType with no explicit options attrset should still be surfaced");
+    assert_eq!(freeform_only.nix_type, "attribute set of signed integer");
+
+    Ok(())
+}
