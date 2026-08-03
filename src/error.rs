@@ -17,9 +17,6 @@ pub enum NixDocError {
     #[error("Path error: {0}")]
     Path(#[from] std::path::StripPrefixError),
 
-    #[error("Parsing error in file {0}: {1}")]
-    Parse(String, String),
-
     #[error("No repository work directory found")]
     NoWorkDir,
 
@@ -68,28 +65,6 @@ impl NixDocError {
     /// A NixDocError::Csv variant with the formatted error message.
     pub fn csv_error<E: std::fmt::Display>(err: E) -> Self {
         Self::with_message(err, NixDocError::Csv)
-    }
-
-    /// Creates a Git operation error with the given error message.
-    ///
-    /// # Arguments
-    /// - `err`: Any error that implements Display.
-    ///
-    /// # Returns
-    /// A NixDocError::GitOperation variant with the formatted error message.
-    pub fn git_error<E: std::fmt::Display>(err: E) -> Self {
-        Self::with_message(err, NixDocError::GitOperation)
-    }
-
-    /// Creates a serialization error with the given error message.
-    ///
-    /// # Arguments
-    /// - `err`: Any error that implements Display.
-    ///
-    /// # Returns
-    /// A NixDocError::Serialization variant with the formatted error message.
-    pub fn serialization_error<E: std::fmt::Display>(err: E) -> Self {
-        Self::with_message(err, NixDocError::Serialization)
     }
 }
 

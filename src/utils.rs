@@ -6,6 +6,7 @@
 use regex::Regex;
 use std::collections::HashMap;
 use std::fs;
+use std::sync::LazyLock;
 use textwrap::dedent;
 
 use std::path::{Path, PathBuf};
@@ -13,6 +14,8 @@ use std::path::{Path, PathBuf};
 use crate::nix_call::collect_aliases;
 use crate::parser;
 use crate::OptionDoc;
+
+static VAR_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\$\{([^}]+)\}").unwrap());
 
 /// Replaces dynamic variables in the given text using the provided replacements.
 ///
@@ -25,11 +28,6 @@ use crate::OptionDoc;
 pub fn apply_replacements(text: &str, replacements: &HashMap<String, String>) -> String {
     if replacements.is_empty() {
         return text.to_string();
-    }
-
-    // Use lazy_static for the regex
-    lazy_static::lazy_static! {
-        static ref VAR_REGEX: Regex = Regex::new(r"\$\{([^}]+)\}").unwrap();
     }
 
     // Use regex replacement rather than iterating through each replacement
@@ -51,13 +49,9 @@ pub fn apply_replacements(text: &str, replacements: &HashMap<String, String>) ->
 /// # Returns
 /// A string with all admonition blocks converted to GitHub format.
 pub fn convert_admonitions(text: &str) -> String {
-    // Create a regex to match Pandoc-style admonition blocks
-    // This pattern matches blocks like ::: {.note} content :::
-    lazy_static::lazy_static! {
-        static ref ADMONITION_REGEX: Regex = Regex::new(
-            r":::\s*\{\.([a-z]+)\}([\s\S]*?):::"
-        ).unwrap();
-    }
+    // Matches Pandoc-style admonition blocks like ::: {.note} content :::
+    static ADMONITION_REGEX: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r":::\s*\{\.([a-z]+)\}([\s\S]*?):::").unwrap());
 
     // Replace each admonition block with its GitHub compatible version
     let result = ADMONITION_REGEX.replace_all(text, |caps: &regex::Captures| {
@@ -93,10 +87,9 @@ pub fn convert_admonitions(text: &str) -> String {
 /// # Returns
 /// A cleaned string with formatting directives transformed and admonitions converted.
 pub fn clean_description(text: &str) -> String {
-    // Create a regex to match patterns like {var}`content` and replace with just `content`
-    lazy_static::lazy_static! {
-        static ref DIRECTIVE_REGEX: Regex = Regex::new(r"\{[a-z]+\}(`[^`]+`)").unwrap();
-    }
+    // Matches patterns like {var}`content` and replaces with just `content`
+    static DIRECTIVE_REGEX: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"\{[a-z]+\}(`[^`]+`)").unwrap());
 
     // Apply both transformations
     let cleaned = DIRECTIVE_REGEX.replace_all(text, "$1").to_string();

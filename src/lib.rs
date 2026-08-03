@@ -219,7 +219,6 @@ pub fn filter_options(options: &[OptionDoc], cli: &Cli) -> Vec<OptionDoc> {
 
     // Filter by search text
     if let Some(ref search) = cli.filter.search {
-        // let search_lower = search.to_lowercase();
         match regex::Regex::new(search) {
             Ok(re) => {
                 filtered.retain(|opt| {

@@ -1,6 +1,6 @@
-use crate::error::NixDocError;
-use crate::OptionDoc;
-use comrak::{markdown_to_html, Options as ComrakOptions};
+//! Static HTML/CSS/JS scaffolding for the generated document: the
+//! `<head>` (styles, no-flash theme restore script) and the instant
+//! search/filter script. Per-option markup lives in [`super::render`].
 
 /// Instant client-side regex search, plus click-to-filter by type
 /// category, over the rendered options.
@@ -10,7 +10,7 @@ use comrak::{markdown_to_html, Options as ComrakOptions};
 /// same order as the `.option` elements in the document; category
 /// filtering reads the `data-category` attribute already present on
 /// each `.option` element directly, so it needs no separate index.
-const SEARCH_SCRIPT_TEMPLATE: &str = r#"    <script>
+pub(super) const SEARCH_SCRIPT_TEMPLATE: &str = r#"    <script>
     (function () {
         const searchText = __SEARCH_INDEX__;
         const input = document.getElementById('search-input');
@@ -92,7 +92,7 @@ const SEARCH_SCRIPT_TEMPLATE: &str = r#"    <script>
     </script>
 "#;
 
-const HTML_TEMPLATE_HEAD: &str = r#"<!DOCTYPE html>
+pub(super) const HTML_TEMPLATE_HEAD: &str = r#"<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -416,6 +416,7 @@ const HTML_TEMPLATE_HEAD: &str = r#"<!DOCTYPE html>
         }
         .option.search-hidden { display: none; }
         .option:first-of-type { padding-top: 0.5em; }
+        .option:last-of-type { border-bottom: none; }
 
         .option-head {
             display: flex;
@@ -509,268 +510,3 @@ const HTML_TEMPLATE_HEAD: &str = r#"<!DOCTYPE html>
 </head>
 <body>
 "#;
-
-/// Categorizes a formatted `nix_type` string (see
-/// [`crate::types::format_type`]) into a small, closed set of display
-/// categories, used both for the per-option type badge and the
-/// click-to-filter legend. This is a presentation-only heuristic over
-/// the already human-formatted string, not a structural type analysis.
-fn classify_type(nix_type: &str) -> (&'static str, &'static str) {
-    let t = nix_type.to_lowercase();
-    if t.contains("list of") {
-        ("list", "list")
-    } else if t.contains("attribute set") {
-        ("set", "set")
-    } else if t.contains("submodule") {
-        ("submodule", "submodule")
-    } else if t.contains("one of") {
-        ("choice", "choice")
-    } else if t.contains("boolean") {
-        ("bool", "boolean")
-    } else if t.contains("package") {
-        ("package", "package")
-    } else if ["integer", "number", "port", "floating point"]
-        .iter()
-        .any(|s| t.contains(s))
-    {
-        ("number", "number")
-    } else if ["string", "path", "raw value"]
-        .iter()
-        .any(|s| t.contains(s))
-    {
-        ("string", "string")
-    } else {
-        ("any", "other")
-    }
-}
-
-/// Splits a dotted option name into its shared prefix and final (leaf)
-/// segment, e.g. `services.nginx.enable` -> (`services.nginx.`, `enable`),
-/// so the leaf can be visually emphasized.
-fn split_leaf(name: &str) -> (&str, &str) {
-    match name.rfind('.') {
-        Some(idx) => (&name[..=idx], &name[idx + 1..]),
-        None => ("", name),
-    }
-}
-
-/// Renders a labeled key/value metadata row. Multi-line or long values
-/// get their own full-width block with a code panel; short values stay
-/// inline next to the label.
-fn format_meta_row(label: &str, content: &str) -> String {
-    let escaped = html_escape::encode_text(content);
-    if content.contains('\n') || content.len() > 60 {
-        format!(
-            r#"            <div class="meta-row block">
-                <span class="meta-label">{label}</span>
-                <pre><code>{escaped}</code></pre>
-            </div>
-"#
-        )
-    } else {
-        format!(
-            r#"            <div class="meta-row">
-                <span class="meta-label">{label}</span>
-                <code>{escaped}</code>
-            </div>
-"#
-        )
-    }
-}
-
-/// Generates an HTML document containing comprehensive documentation for NixOS module options.
-///
-/// # Arguments
-/// - `options`: A slice of option documentation entries to render as HTML.
-///
-/// # Returns
-/// A `Result` containing the complete HTML document with styling and navigation or an error.
-pub fn generate_html(options: &[OptionDoc]) -> Result<String, NixDocError> {
-    let mut output = String::with_capacity(options.len() * 800 + 1500);
-    output.push_str(HTML_TEMPLATE_HEAD);
-
-    // Set up markdown rendering options
-    let mut comrak_options = ComrakOptions::default();
-    comrak_options.extension.strikethrough = true;
-    comrak_options.extension.table = true;
-    comrak_options.extension.autolink = true;
-    comrak_options.extension.tasklist = true;
-    comrak_options.extension.alerts = true;
-    comrak_options.render.r#unsafe = true; // Allow HTML in markdown (if needed)
-
-    // Canonical legend order; only categories actually present in this
-    // document get a chip.
-    const CATEGORIES: [(&str, &str); 9] = [
-        ("bool", "boolean"),
-        ("choice", "choice"),
-        ("string", "string"),
-        ("number", "number"),
-        ("package", "package"),
-        ("list", "list"),
-        ("set", "set"),
-        ("submodule", "submodule"),
-        ("any", "other"),
-    ];
-    let mut categories_present = std::collections::HashSet::new();
-
-    // Per-option searchable text, in the same order as the `.option`
-    // elements below, for the instant client-side search script.
-    let mut search_index: Vec<String> = Vec::with_capacity(options.len());
-    let mut body = String::with_capacity(options.len() * 700);
-
-    for option in options {
-        search_index.push(
-            [
-                Some(option.name.as_str()),
-                option.description.as_deref(),
-                Some(option.nix_type.as_str()),
-                option.default_value.as_deref(),
-                option.example.as_deref(),
-            ]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>()
-            .join(" "),
-        );
-
-        let slug = option.name.replace(['.', ':'], "-");
-        let (category_class, category_label) = classify_type(&option.nix_type);
-        categories_present.insert((category_class, category_label));
-        let (prefix, leaf) = split_leaf(&option.name);
-
-        let (primary, other_declarations) = option
-            .declarations
-            .split_first()
-            .expect("an option always has at least one declaration");
-
-        body.push_str(&format!(
-            r#"    <article class="option" id="{slug}" data-category="{category_class}">
-        <div class="option-head">
-            <h2 class="option-path">
-                <a href="{href}#L{line}"><span class="path-prefix">{prefix}</span><span class="path-leaf">{leaf}</span></a>
-            </h2>
-            <span class="type-badge t-{category_class}">{category_label}</span>
-        </div>
-"#,
-            slug = html_escape::encode_text(&slug),
-            category_class = category_class,
-            href = html_escape::encode_text(&primary.file_path),
-            line = primary.line_number,
-            prefix = html_escape::encode_text(prefix),
-            leaf = html_escape::encode_text(leaf),
-            category_label = category_label,
-        ));
-
-        if let Some(description) = &option.description {
-            let html_description = markdown_to_html(description, &comrak_options);
-            body.push_str(&format!(
-                r#"        <div class="option-desc">{html_description}</div>
-"#
-            ));
-        }
-
-        let mut meta_rows = String::new();
-        meta_rows.push_str(&format_meta_row("Type", &option.nix_type));
-        if let Some(default) = &option.default_value {
-            meta_rows.push_str(&format_meta_row("Default", default));
-        }
-        if let Some(example) = &option.example {
-            meta_rows.push_str(&format_meta_row("Example", example));
-        }
-        body.push_str(&format!(
-            "        <div class=\"option-meta\">\n{meta_rows}        </div>\n"
-        ));
-
-        body.push_str(&format!(
-            r#"        <div class="option-decl"><a href="{0}#L{1}">{0}:{1}</a></div>
-"#,
-            html_escape::encode_text(&primary.file_path),
-            primary.line_number
-        ));
-
-        if !other_declarations.is_empty() {
-            body.push_str("        <ul class=\"also-declared\">\n");
-            for decl in other_declarations {
-                body.push_str(&format!(
-                    r#"            <li><a href="{0}#L{1}">{0}:{1}</a>"#,
-                    html_escape::encode_text(&decl.file_path),
-                    decl.line_number
-                ));
-                if let Some(alt) = &decl.description {
-                    body.push_str(&format!(
-                        r#"<div class="alt-desc">{}</div>"#,
-                        markdown_to_html(alt, &comrak_options)
-                    ));
-                }
-                body.push_str("</li>\n");
-            }
-            body.push_str("        </ul>\n");
-        }
-
-        body.push_str("    </article>\n\n");
-    }
-
-    let mut legend = String::new();
-    for (class, label) in CATEGORIES {
-        if categories_present.contains(&(class, label)) {
-            legend.push_str(&format!(
-                r#"            <button type="button" class="legend-chip t-{class}" data-category="{class}">{label}</button>
-"#
-            ));
-        }
-    }
-
-    output.push_str(&format!(
-        r#"    <div class="masthead-top">
-        <p class="eyebrow">Nix Options</p>
-        <div class="masthead-right">
-            <p class="opt-count"><strong>{count}</strong> option{plural}</p>
-            <button type="button" id="theme-toggle" class="theme-toggle" aria-label="Switch to dark theme">
-                <svg class="icon-sun" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                    <circle cx="8" cy="8" r="3" stroke="currentColor" stroke-width="1.3"/>
-                    <path d="M8 1v2M8 13v2M1 8h2M13 8h2M3.5 3.5l1.4 1.4M11.1 11.1l1.4 1.4M3.5 12.5l1.4-1.4M11.1 4.9l1.4-1.4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
-                </svg>
-                <svg class="icon-moon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                    <path d="M13.5 9.5A5.5 5.5 0 1 1 6.5 2.5a4.25 4.25 0 1 0 7 7Z" fill="currentColor"/>
-                </svg>
-            </button>
-        </div>
-    </div>
-    <div class="toolbar">
-        <div class="search-row">
-            <svg class="search-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                <circle cx="7" cy="7" r="5.25" stroke="currentColor" stroke-width="1.5"/>
-                <path d="M11 11L14.5 14.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-            </svg>
-            <input type="text" id="search-input" placeholder="Search options" autocomplete="off" aria-label="Search options">
-            <kbd class="search-kbd">/</kbd>
-        </div>
-        <div id="search-status" role="status"></div>
-        <div class="legend" role="group" aria-label="Filter by type">
-{legend}        </div>
-    </div>
-"#,
-        count = options.len(),
-        plural = if options.len() == 1 { "" } else { "s" },
-    ));
-
-    output.push_str(&body);
-
-    // Inject the instant search script with its per-option search index.
-    // The `</` guard prevents a description or example containing that
-    // literal text from prematurely closing the <script> tag.
-    let search_index_json = serde_json::to_string(&search_index)
-        .map_err(|e| NixDocError::Serialization(e.to_string()))?
-        .replace("</", "<\\/");
-    output.push_str(&SEARCH_SCRIPT_TEMPLATE.replace("__SEARCH_INDEX__", &search_index_json));
-
-    output.push_str(&format!(
-        r#"    <p class="footer">generated with <a href="{}">{}</a></p>
-</body>
-</html>"#,
-        option_env!("CARGO_PKG_REPOSITORY").unwrap_or(env!("CARGO_PKG_NAME")),
-        env!("CARGO_PKG_NAME")
-    ));
-
-    Ok(output)
-}
