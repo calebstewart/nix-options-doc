@@ -13,6 +13,7 @@
 pub(super) const SEARCH_SCRIPT_TEMPLATE: &str = r#"    <script>
     (function () {
         const searchText = __SEARCH_INDEX__;
+        const categoryIndex = __CATEGORY_INDEX__;
         const input = document.getElementById('search-input');
         const status = document.getElementById('search-status');
         const options = document.querySelectorAll('.option');
@@ -38,38 +39,122 @@ pub(super) const SEARCH_SCRIPT_TEMPLATE: &str = r#"    <script>
             } catch (e) {}
         });
 
-        function runSearch() {
-            const query = input.value.trim();
-            input.classList.remove('invalid');
-            status.classList.remove('invalid');
-
+        // Fallback used inline if Workers aren't available; the same
+        // logic also runs in the Worker below.
+        function matchAll(query, category) {
             let regex = null;
             if (query !== '') {
                 try {
                     regex = new RegExp(query, 'i');
                 } catch (e) {
-                    input.classList.add('invalid');
-                    status.classList.add('invalid');
-                    status.textContent = 'Invalid regular expression';
-                    return;
+                    return { error: true };
                 }
             }
+            const visible = new Array(searchText.length);
+            let count = 0;
+            for (let i = 0; i < searchText.length; i++) {
+                const matches = (!regex || regex.test(searchText[i])) && (!category || categoryIndex[i] === category);
+                visible[i] = matches;
+                if (matches) count++;
+            }
+            return { visible, count };
+        }
 
-            let visible = 0;
-            options.forEach((el, i) => {
-                const matchesQuery = !regex || regex.test(searchText[i]);
-                const matchesCategory = !activeCategory || el.dataset.category === activeCategory;
-                const matches = matchesQuery && matchesCategory;
-                el.classList.toggle('search-hidden', !matches);
-                if (matches) visible++;
-            });
+        let worker = null;
+        let requestId = 0;
+        if (window.Worker) {
+            try {
+                const workerSource = `
+                    let searchText = [];
+                    let categoryIndex = [];
+                    self.onmessage = function (e) {
+                        const msg = e.data;
+                        if (msg.type === 'init') {
+                            searchText = msg.searchText;
+                            categoryIndex = msg.categoryIndex;
+                            return;
+                        }
+                        let regex = null;
+                        if (msg.query !== '') {
+                            try {
+                                regex = new RegExp(msg.query, 'i');
+                            } catch (err) {
+                                self.postMessage({ id: msg.id, error: true });
+                                return;
+                            }
+                        }
+                        // Transferred via its buffer below - zero-copy, not structured-cloned.
+                        const visible = new Uint8Array(searchText.length);
+                        let count = 0;
+                        for (let i = 0; i < searchText.length; i++) {
+                            const matches = (!regex || regex.test(searchText[i])) && (!msg.category || categoryIndex[i] === msg.category);
+                            visible[i] = matches ? 1 : 0;
+                            if (matches) count++;
+                        }
+                        self.postMessage({ id: msg.id, visible, count }, [visible.buffer]);
+                    };
+                `;
+                worker = new Worker(URL.createObjectURL(new Blob([workerSource], { type: 'application/javascript' })));
+                worker.postMessage({ type: 'init', searchText, categoryIndex });
+                worker.onmessage = (e) => {
+                    if (e.data.id !== requestId) return; // superseded by a newer query
+                    applyResult(e.data);
+                };
+                worker.onerror = () => {
+                    worker = null;
+                };
+            } catch (e) {
+                worker = null;
+            }
+        }
 
-            status.textContent = (regex || activeCategory)
-                ? `Showing ${visible} of ${options.length} options`
+        // Chunked across frames so large documents don't drop one applying it.
+        function applyVisibility(visible) {
+            let i = 0;
+            const chunkSize = 300;
+            function step() {
+                const end = Math.min(i + chunkSize, options.length);
+                for (; i < end; i++) {
+                    options[i].classList.toggle('search-hidden', !visible[i]);
+                }
+                if (i < options.length) {
+                    requestAnimationFrame(step);
+                }
+            }
+            requestAnimationFrame(step);
+        }
+
+        function applyResult(result) {
+            if (result.error) {
+                input.classList.add('invalid');
+                status.classList.add('invalid');
+                status.textContent = 'Invalid regular expression';
+                return;
+            }
+            applyVisibility(result.visible);
+            status.textContent = (input.value.trim() !== '' || activeCategory)
+                ? `Showing ${result.count} of ${options.length} options`
                 : '';
         }
 
-        input.addEventListener('input', runSearch);
+        function runSearch() {
+            const query = input.value.trim();
+            input.classList.remove('invalid');
+            status.classList.remove('invalid');
+
+            requestId += 1;
+            if (worker) {
+                worker.postMessage({ id: requestId, query, category: activeCategory });
+            } else {
+                applyResult(matchAll(query, activeCategory));
+            }
+        }
+
+        let searchDebounce = null;
+        input.addEventListener('input', () => {
+            clearTimeout(searchDebounce);
+            searchDebounce = setTimeout(runSearch, 120);
+        });
 
         legendButtons.forEach((btn) => {
             btn.addEventListener('click', () => {
@@ -123,8 +208,8 @@ pub(super) const HTML_TEMPLATE_HEAD: &str = r#"<!DOCTYPE html>
             --accent: #1C6E8C;
             --danger: #B3261E;
 
-            --c-bool: #B8720A;
-            --c-choice: #6B7F1F;
+            --c-bool: #A66709;
+            --c-choice: #697D1F;
             --c-string: #2563A8;
             --c-number: #1F7A4D;
             --c-package: #A63D8F;
@@ -132,6 +217,21 @@ pub(super) const HTML_TEMPLATE_HEAD: &str = r#"<!DOCTYPE html>
             --c-set: #7C3AED;
             --c-submodule: #B23A6B;
             --c-any: #5B6B78;
+
+            --a-note: #1F6FEB;
+            --a-tip: #2B9E4B;
+            --a-important: #8250DF;
+            --a-warning: #9A6700;
+            --a-caution: #CF222E;
+
+            /* 4px base at the root font-size; rem, not em, so nested
+               font-sizes can't change what a step actually renders as. */
+            --sp-1: 0.25rem;
+            --sp-2: 0.5rem;
+            --sp-3: 0.75rem;
+            --sp-4: 1rem;
+            --sp-5: 1.5rem;
+            --sp-7: 3rem;
         }
 
         @media (prefers-color-scheme: dark) {
@@ -154,6 +254,12 @@ pub(super) const HTML_TEMPLATE_HEAD: &str = r#"<!DOCTYPE html>
                 --c-set: #B18AF5;
                 --c-submodule: #E187AE;
                 --c-any: #93A4AF;
+
+                --a-note: #1F6FEB;
+                --a-tip: #2DA44E;
+                --a-important: #8250DF;
+                --a-warning: #9A6700;
+                --a-caution: #D12B36;
             }
         }
 
@@ -179,6 +285,12 @@ pub(super) const HTML_TEMPLATE_HEAD: &str = r#"<!DOCTYPE html>
             --c-set: #B18AF5;
             --c-submodule: #E187AE;
             --c-any: #93A4AF;
+
+            --a-note: #1F6FEB;
+            --a-tip: #2DA44E;
+            --a-important: #8250DF;
+            --a-warning: #9A6700;
+            --a-caution: #D12B36;
         }
         :root[data-theme="light"] {
             --bg: #F6F9FB;
@@ -190,8 +302,8 @@ pub(super) const HTML_TEMPLATE_HEAD: &str = r#"<!DOCTYPE html>
             --accent: #1C6E8C;
             --danger: #B3261E;
 
-            --c-bool: #B8720A;
-            --c-choice: #6B7F1F;
+            --c-bool: #A66709;
+            --c-choice: #697D1F;
             --c-string: #2563A8;
             --c-number: #1F7A4D;
             --c-package: #A63D8F;
@@ -199,6 +311,12 @@ pub(super) const HTML_TEMPLATE_HEAD: &str = r#"<!DOCTYPE html>
             --c-set: #7C3AED;
             --c-submodule: #B23A6B;
             --c-any: #5B6B78;
+
+            --a-note: #1F6FEB;
+            --a-tip: #2B9E4B;
+            --a-important: #8250DF;
+            --a-warning: #9A6700;
+            --a-caution: #CF222E;
         }
 
         @media (prefers-reduced-motion: reduce) {
@@ -243,7 +361,7 @@ pub(super) const HTML_TEMPLATE_HEAD: &str = r#"<!DOCTYPE html>
             max-width: 100%;
             overflow: auto;
         }
-        pre code { background: transparent; padding: 0; font-size: 0.85em; }
+        pre code { background: transparent; padding: 0; font-size: 0.8em; }
 
         /* ---- masthead ---- */
 
@@ -255,7 +373,7 @@ pub(super) const HTML_TEMPLATE_HEAD: &str = r#"<!DOCTYPE html>
         }
         .eyebrow {
             font-family: ui-monospace, "SF Mono", "Cascadia Code", monospace;
-            font-size: 0.75em;
+            font-size: 0.8em;
             font-weight: 600;
             letter-spacing: 0.12em;
             text-transform: uppercase;
@@ -307,7 +425,7 @@ pub(super) const HTML_TEMPLATE_HEAD: &str = r#"<!DOCTYPE html>
             border-bottom: 1px solid var(--line);
         }
 
-        .search-row { position: relative; margin-top: 0.75em; }
+        .search-row { position: relative; margin-top: var(--sp-3); }
         .search-icon {
             position: absolute;
             left: 0.75em;
@@ -346,7 +464,7 @@ pub(super) const HTML_TEMPLATE_HEAD: &str = r#"<!DOCTYPE html>
             top: 50%;
             transform: translateY(-50%);
             font-family: ui-monospace, "SF Mono", "Cascadia Code", monospace;
-            font-size: 0.75em;
+            font-size: 0.8em;
             color: var(--ink-muted);
             border: 1px solid var(--line);
             border-radius: 4px;
@@ -354,10 +472,10 @@ pub(super) const HTML_TEMPLATE_HEAD: &str = r#"<!DOCTYPE html>
             pointer-events: none;
         }
         #search-status {
-            margin-top: 0.5em;
+            margin-top: var(--sp-2);
             min-height: 1.2em;
             font-family: ui-monospace, "SF Mono", "Cascadia Code", monospace;
-            font-size: 0.75em;
+            font-size: 0.8em;
             color: var(--ink-muted);
         }
         #search-status.invalid { color: var(--danger); }
@@ -365,8 +483,8 @@ pub(super) const HTML_TEMPLATE_HEAD: &str = r#"<!DOCTYPE html>
         .legend {
             display: flex;
             flex-wrap: wrap;
-            gap: 0.4em;
-            margin-top: 0.75em;
+            gap: var(--sp-2);
+            margin-top: var(--sp-3);
         }
 
         /* ---- type badges + legend chips share a palette ---- */
@@ -415,6 +533,9 @@ pub(super) const HTML_TEMPLATE_HEAD: &str = r#"<!DOCTYPE html>
         .option {
             padding: 1.75em 0;
             border-bottom: 1px solid var(--line);
+            /* Skips layout/paint for off-screen options on large documents. */
+            content-visibility: auto;
+            contain-intrinsic-size: 0 220px;
         }
         .option.search-hidden { display: none; }
         .option:first-of-type { padding-top: 0.5em; }
@@ -430,7 +551,7 @@ pub(super) const HTML_TEMPLATE_HEAD: &str = r#"<!DOCTYPE html>
 
         .option-path {
             font-family: ui-monospace, "SF Mono", "Cascadia Code", monospace;
-            font-size: 1.05em;
+            font-size: 1.15em;
             font-weight: 600;
             margin: 0;
             word-break: break-word;
@@ -440,7 +561,7 @@ pub(super) const HTML_TEMPLATE_HEAD: &str = r#"<!DOCTYPE html>
         .path-leaf { color: var(--ink); }
 
         .option-desc {
-            margin: 0.6em 0 0;
+            margin: var(--sp-3) 0 0;
             color: var(--ink);
         }
         .option-desc p:first-child { margin-top: 0; }
@@ -450,7 +571,7 @@ pub(super) const HTML_TEMPLATE_HEAD: &str = r#"<!DOCTYPE html>
             display: flex;
             flex-wrap: wrap;
             gap: 0.5em 1.5em;
-            margin: 0.9em 0 0;
+            margin: var(--sp-4) 0 0;
         }
         .meta-row { display: flex; align-items: baseline; gap: 0.5em; }
         .meta-row.block {
@@ -474,13 +595,15 @@ pub(super) const HTML_TEMPLATE_HEAD: &str = r#"<!DOCTYPE html>
         }
 
         .option-decl {
-            margin-top: 0.9em;
+            margin-top: var(--sp-3);
             font-family: ui-monospace, "SF Mono", "Cascadia Code", monospace;
-            font-size: 0.78em;
+            font-size: 0.8em;
             color: var(--ink-muted);
         }
         .also-declared-label {
-            margin-top: 0.9em;
+            /* Deliberately the scale's biggest gap - marks a real seam
+               (other files vs. this option's own declaration above). */
+            margin-top: var(--sp-5);
             font-family: ui-monospace, "SF Mono", "Cascadia Code", monospace;
             font-size: 0.72em;
             font-weight: 600;
@@ -489,45 +612,45 @@ pub(super) const HTML_TEMPLATE_HEAD: &str = r#"<!DOCTYPE html>
             color: var(--ink-muted);
         }
         .also-declared {
-            margin-top: 0.4em;
+            margin-top: var(--sp-1);
             padding-left: 1em;
             list-style: none;
             font-family: ui-monospace, "SF Mono", "Cascadia Code", monospace;
-            font-size: 0.78em;
+            font-size: 0.8em;
             color: var(--ink-muted);
         }
-        .also-declared li { margin-top: 0.3em; }
-        .also-declared .alt-desc { color: var(--ink-muted); margin: 0.2em 0 0; }
+        .also-declared li { margin-top: var(--sp-1); }
+        .also-declared .alt-desc { color: var(--ink-muted); margin: var(--sp-1) 0 0; }
 
         /* ---- github-alert admonitions inside descriptions ---- */
 
         .markdown-alert {
-            padding: 0.6em 1em;
-            margin: 0.75em 0;
+            padding: var(--sp-3) var(--sp-4);
+            margin: var(--sp-3) 0;
             border-radius: 6px;
             border-left: 3px solid var(--line);
             background: var(--surface-2);
         }
-        .markdown-alert p { margin: 0.4em 0; }
+        .markdown-alert p { margin: var(--sp-2) 0; }
         .markdown-alert-title {
             font-weight: 700;
-            font-size: 0.85em;
+            font-size: 0.8em;
             letter-spacing: 0.03em;
             text-transform: uppercase;
             margin-bottom: 0.3em !important;
         }
-        .markdown-alert-note { border-left-color: #1F6FEB; }
-        .markdown-alert-tip { border-left-color: #2DA44E; }
-        .markdown-alert-important { border-left-color: #8250DF; }
-        .markdown-alert-warning { border-left-color: #9A6700; }
-        .markdown-alert-caution { border-left-color: #CF222E; }
+        .markdown-alert-note { border-left-color: var(--a-note); }
+        .markdown-alert-tip { border-left-color: var(--a-tip); }
+        .markdown-alert-important { border-left-color: var(--a-important); }
+        .markdown-alert-warning { border-left-color: var(--a-warning); }
+        .markdown-alert-caution { border-left-color: var(--a-caution); }
 
         .footer {
-            margin-top: 3em;
-            padding-top: 1.5em;
+            margin-top: var(--sp-7);
+            padding-top: var(--sp-5);
             border-top: 1px solid var(--line);
             font-family: ui-monospace, "SF Mono", "Cascadia Code", monospace;
-            font-size: 0.78em;
+            font-size: 0.8em;
             color: var(--ink-muted);
         }
 

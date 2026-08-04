@@ -30,15 +30,17 @@ pub fn generate_html(options: &[OptionDoc]) -> Result<String, NixDocError> {
 
     let mut categories_present = HashSet::new();
 
-    // Per-option searchable text, in the same order as the `.option`
-    // elements below, for the instant client-side search script.
+    // Per-option search text and category, parallel to the `.option`
+    // elements below - handed to the search Worker, which has no DOM access.
     let mut search_index: Vec<String> = Vec::with_capacity(options.len());
+    let mut category_index: Vec<&'static str> = Vec::with_capacity(options.len());
     let mut body = String::with_capacity(options.len() * 700);
 
     for option in options {
         search_index.push(render::search_index_entry(option));
 
         let (article, category) = render::render_option(option, &comrak_options);
+        category_index.push(category.0);
         categories_present.insert(category);
         body.push_str(&article);
     }
@@ -55,7 +57,7 @@ pub fn generate_html(options: &[OptionDoc]) -> Result<String, NixDocError> {
 
     output.push_str(&format!(
         r#"    <div class="masthead-top">
-        <p class="eyebrow">Nix Options</p>
+        <h1 class="eyebrow">Nix Options</h1>
         <div class="masthead-right">
             <p class="opt-count"><strong>{count}</strong> option{plural}</p>
             <button type="button" id="theme-toggle" class="theme-toggle" aria-label="Switch to dark theme">
@@ -95,7 +97,14 @@ pub fn generate_html(options: &[OptionDoc]) -> Result<String, NixDocError> {
     let search_index_json = serde_json::to_string(&search_index)
         .map_err(|e| NixDocError::Serialization(e.to_string()))?
         .replace("</", "<\\/");
-    output.push_str(&SEARCH_SCRIPT_TEMPLATE.replace("__SEARCH_INDEX__", &search_index_json));
+    let category_index_json = serde_json::to_string(&category_index)
+        .map_err(|e| NixDocError::Serialization(e.to_string()))?
+        .replace("</", "<\\/");
+    output.push_str(
+        &SEARCH_SCRIPT_TEMPLATE
+            .replace("__SEARCH_INDEX__", &search_index_json)
+            .replace("__CATEGORY_INDEX__", &category_index_json),
+    );
 
     output.push_str(&format!(
         r#"    <p class="footer">generated with <a href="{}">{}</a></p>
