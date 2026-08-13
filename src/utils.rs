@@ -136,7 +136,7 @@ pub fn apply_replacements(text: &str, replacements: &HashMap<String, String>) ->
 
     // Use regex replacement rather than iterating through each replacement
     VAR_REGEX
-        .replace_all(text, |caps: &regex::Captures| {
+        .replace_all(text, |caps: &regex::Captures<'_>| {
             let var_name = &caps[1];
             replacements
                 .get(var_name)
@@ -158,17 +158,17 @@ pub fn convert_admonitions(text: &str) -> String {
         LazyLock::new(|| Regex::new(r":::\s*\{\.([a-z]+)\}([\s\S]*?):::").unwrap());
 
     // Replace each admonition block with its GitHub compatible version
-    let result = ADMONITION_REGEX.replace_all(text, |caps: &regex::Captures| {
+    let result = ADMONITION_REGEX.replace_all(text, |caps: &regex::Captures<'_>| {
         let admonition_type = &caps[1];
         let content = caps[2].trim();
 
         // Map Pandoc admonition types to GitHub admonition types
         let github_type = match admonition_type {
-            "note" => "NOTE",
             "warning" | "caution" => "WARNING",
             "important" => "IMPORTANT",
             "tip" => "TIP",
-            _ => "NOTE", // Default fallback
+            // "note", plus any unrecognized admonition type
+            _ => "NOTE",
         };
 
         // Format as GitHub admonition
@@ -396,7 +396,7 @@ pub fn should_process_file(entry: &walkdir::DirEntry, exclude_paths: &[PathBuf])
 /// - `replacements`: Variable replacements to apply during parsing.
 ///
 /// # Returns
-/// A vector of OptionDoc structs representing the options found in the file.
+/// A vector of `OptionDoc` structs representing the options found in the file.
 pub fn process_nix_file(
     file_path: &Path,
     dir: &Path,

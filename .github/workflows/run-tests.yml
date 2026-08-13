@@ -57,6 +57,8 @@ jobs:
 
     # --all-targets so the `#[cfg(test)]` module in src/tests/ is linted too;
     # a bare `cargo clippy` never compiles it.
+    # The lint set itself lives in Cargo.toml's [lints] tables; RUSTFLAGS
+    # '-Dwarnings' above escalates those warnings to errors here.
     - name: Clippy
       shell: bash
       run: cargo clippy --all-targets

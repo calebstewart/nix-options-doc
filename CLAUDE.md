@@ -157,6 +157,16 @@ Parallelism is rayon over *files only*; everything downstream is single-threaded
 - **Regexes** are compiled once into `static … LazyLock<Regex>` (`VAR_REGEX`,
   `ADMONITION_REGEX`, `PREFIX_REGEX`, `DIRECTIVE_REGEX` in `src/utils.rs`).
 - **No cargo features exist** — no `[features]` table, no `#[cfg(feature = …)]` anywhere. That's why CI dropped `cargo-hack`; if a `[features]` table is ever added, reinstate `cargo hack check --each-feature` in `run-tests.yml` (there's a comment there saying so).
+- **The lint set is `[lints.rust]` / `[lints.clippy]` in `Cargo.toml`** — Embark
+  standard lints v6, minus three names clippy has since removed/renamed away
+  (`string_to_string`, `match_on_vec_items`, `mismatched_target_os`) and with
+  `empty_enum` under its current name `empty_enums`. It lives in `Cargo.toml`
+  rather than a `.cargo/config.toml` because the workflow's `RUSTFLAGS:
+  '-Dwarnings'` would shadow `target.*.rustflags` entirely (Cargo takes rustflags
+  from one source only) — that's the bug from #10. `unsafe_code` is the sole
+  `deny`; its one sanctioned exception is the `#[allow(unsafe_code)]` on the
+  `gix::interrupt::init_handler` block in `lib.rs`'s `prepare_path`. Levels are
+  `warn`; CI escalates them to errors through `RUSTFLAGS`.
 - **Doc style.** Public functions carry rustdoc with `# Arguments` / `# Returns`, and
   non-obvious decisions get long inline comments explaining *why*. Match that.
 

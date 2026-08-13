@@ -230,7 +230,7 @@ pub fn filter_options(options: &[OptionDoc], cli: &Cli) -> Vec<OptionDoc> {
     // Filter by type
     if let Some(ref type_str) = cli.filter.filter_by_type {
         filtered.retain(|opt| {
-            let type_info = opt.nix_type.to_string().to_lowercase();
+            let type_info = opt.nix_type.to_lowercase();
             type_info.contains(&type_str.to_lowercase())
         });
     }
@@ -241,11 +241,7 @@ pub fn filter_options(options: &[OptionDoc], cli: &Cli) -> Vec<OptionDoc> {
             Ok(re) => {
                 filtered.retain(|opt| {
                     re.is_match(&opt.name)
-                        || opt
-                            .description
-                            .as_ref()
-                            .map(|d| re.is_match(d))
-                            .unwrap_or(false)
+                        || opt.description.as_ref().is_some_and(|d| re.is_match(d))
                 });
             }
             Err(e) => {
@@ -344,7 +340,7 @@ pub fn filter_options(options: &[OptionDoc], cli: &Cli) -> Vec<OptionDoc> {
 ///
 /// # Returns
 /// A tuple containing the path to the working directory and an optional `TempDir` (for cleanup).
-/// If the path is local, returns the local path with None for TempDir.
+/// If the path is local, returns the local path with None for `TempDir`.
 /// If the path is a git URL, clones the repository and returns the temp directory.
 pub fn prepare_path(cli: &Cli) -> Result<(PathBuf, Option<TempDir>), NixDocError> {
     // Check if the path is a local directory
@@ -359,6 +355,14 @@ pub fn prepare_path(cli: &Cli) -> Result<(PathBuf, Option<TempDir>), NixDocError
 
     // Attempt to fetch git repository
     // Initialize interrupt handler.
+    //
+    // `unsafe_code` is denied crate-wide via `[lints.rust]` in `Cargo.toml`;
+    // this is the single sanctioned exception. `gix::interrupt::init_handler`
+    // is `unsafe` because it installs a process-global signal handler, which
+    // is only sound to do once and from a context where no other thread is
+    // concurrently installing one. `prepare_path` runs on the main thread
+    // before any of the rayon parallelism downstream starts, so that holds.
+    #[allow(unsafe_code)]
     unsafe {
         gix::interrupt::init_handler(1, || {}).map_err(|e| {
             NixDocError::GitOperation(format!("Failed to initialize interrupt handler: {}", e))
@@ -558,27 +562,24 @@ pub fn collect_options(
     let mut index_by_name: HashMap<String, usize> = HashMap::new();
 
     for option in options {
-        match index_by_name.get(&option.name) {
-            Some(&idx) => {
-                // Only carry a per-declaration description when it
-                // actually differs from the primary (first-found) one,
-                // so callers don't need to repeat it for the common case.
-                let alt_description = if unique_options[idx].description != option.description {
-                    option.description.clone()
-                } else {
-                    None
-                };
-                for mut decl in option.declarations {
-                    decl.description = alt_description.clone();
-                    if !unique_options[idx].declarations.contains(&decl) {
-                        unique_options[idx].declarations.push(decl);
-                    }
+        if let Some(&idx) = index_by_name.get(&option.name) {
+            // Only carry a per-declaration description when it
+            // actually differs from the primary (first-found) one,
+            // so callers don't need to repeat it for the common case.
+            let alt_description = if unique_options[idx].description != option.description {
+                option.description.clone()
+            } else {
+                None
+            };
+            for mut decl in option.declarations {
+                decl.description = alt_description.clone();
+                if !unique_options[idx].declarations.contains(&decl) {
+                    unique_options[idx].declarations.push(decl);
                 }
             }
-            None => {
-                index_by_name.insert(option.name.clone(), unique_options.len());
-                unique_options.push(option);
-            }
+        } else {
+            index_by_name.insert(option.name.clone(), unique_options.len());
+            unique_options.push(option);
         }
     }
 
