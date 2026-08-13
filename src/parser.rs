@@ -166,16 +166,50 @@ fn get_line_number(node: &SyntaxNode, source_text: &str) -> usize {
 /// Clean and format a description string for documentation.
 fn process_description(description: &str, replacements: &HashMap<String, String>) -> String {
     let replaced = apply_replacements(description, replacements);
-    let dedented = custom_dedent(&replaced);
-    clean_description(&dedented)
+    clean_description(&replaced)
 }
 
-/// Extracts the unquoted text of a (single-line) string literal node.
+/// Extracts the text of a string literal node with Nix's own string
+/// semantics applied: exactly one delimiter pair removed, escape
+/// sequences interpreted, and (for `''` strings) the common indentation
+/// stripped the way Nix itself strips it.
+///
+/// Interpolations are re-emitted as their `${...}` source text rather
+/// than dropped, because they are statically unresolvable here and
+/// `utils::apply_replacements` (the `--replace` flag) still has to be
+/// able to see and substitute them downstream. One consequence worth
+/// knowing: an escaped `''${name}` now unescapes to `${name}`, which
+/// `--replace name=...` may then substitute.
+///
+/// Falls back to the raw (dedented, trimmed) source text for anything
+/// that is not a well-formed string node - both because a description
+/// can legitimately be some other expression (`lib.mdDoc "..."`), and
+/// because rnix's `normalized_parts` *asserts* on the error-recovery
+/// nodes a malformed file produces, which would turn this crate's
+/// deliberate graceful degradation into a process-wide panic.
 fn string_text(node: &SyntaxNode) -> String {
-    node.text()
-        .to_string()
-        .trim_matches(['"', '\''])
-        .to_string()
+    let is_well_formed = node.kind() == SyntaxKind::NODE_STRING
+        && node.children_with_tokens().all(|child| {
+            matches!(
+                child.kind(),
+                SyntaxKind::TOKEN_STRING_START
+                    | SyntaxKind::TOKEN_STRING_END
+                    | SyntaxKind::TOKEN_STRING_CONTENT
+                    | SyntaxKind::NODE_INTERPOL
+            )
+        });
+    let string = match ast::Str::cast(node.clone()).filter(|_| is_well_formed) {
+        Some(string) => string,
+        None => return custom_dedent(node.text().to_string().trim()),
+    };
+    string
+        .normalized_parts()
+        .into_iter()
+        .map(|part| match part {
+            ast::InterpolPart::Literal(text) => text,
+            ast::InterpolPart::Interpolation(interpol) => interpol.syntax().text().to_string(),
+        })
+        .collect()
 }
 
 /// Extracts the unquoted text of each string item in a `NODE_LIST` node.
