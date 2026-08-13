@@ -62,6 +62,12 @@ fn test_markdown_generation() -> Result<(), Box<dyn std::error::Error + Send + S
 /// declaration and lists any others under "Also declared in:", showing
 /// a declaration's own description only when it differs from the
 /// primary one.
+///
+/// The secondary declaration's `file_path` and `condition` both carry a
+/// backtick, so this also guards the "Also declared in" call sites for
+/// `inline_code(&decl.file_path)` and `inline_code(condition)` - a
+/// per-hunk revert of either one back to `format!("`{}`", …)` must fail
+/// here (see PR #33 review: those two call sites had no coverage).
 #[test]
 fn test_markdown_also_declared_in() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let options = vec![OptionDoc {
@@ -79,10 +85,10 @@ fn test_markdown_also_declared_in() -> Result<(), Box<dyn std::error::Error + Se
                 condition: None,
             },
             Declaration {
-                file_path: "b.nix".to_string(),
+                file_path: "b`.nix".to_string(),
                 line_number: 5,
                 description: Some("Different description in b.nix.".to_string()),
-                condition: None,
+                condition: Some("cfg.mode == \"b`ackt`ick\"".to_string()),
             },
         ],
     }];
@@ -92,10 +98,13 @@ fn test_markdown_also_declared_in() -> Result<(), Box<dyn std::error::Error + Se
     // Heading links to the first (primary) declaration.
     assert!(markdown.contains("## [`options.test.shared`](<a.nix#L1>)"));
     // The second declaration is listed separately, with its own
-    // (differing) description shown alongside it.
+    // (differing) description shown alongside it. Its file path and
+    // condition both contain a backtick, so they must render with a
+    // doubled delimiter, not a bare single-backtick span.
     assert!(markdown.contains("**Also declared in:**"));
-    assert!(markdown.contains("[`b.nix`](<b.nix#L5>)"));
+    assert!(markdown.contains("[``b`.nix``](<b`.nix#L5>)"));
     assert!(markdown.contains("Different description in b.nix."));
+    assert!(markdown.contains("Only declared when ``cfg.mode == \"b`ackt`ick\"``"));
 
     Ok(())
 }
@@ -970,20 +979,29 @@ fn test_markdown_link_text_and_name_with_backtick(
 /// The block-form renderer (used for multi-line or >72-char values) used
 /// to hard-code a three-backtick fence, which a default/example
 /// containing its own run of three backticks could close early. Guards
-/// the fence growing to four backticks when the content contains one.
+/// the fence growing to four backticks when the content contains one -
+/// for all three block-form call sites (`nix_type`, `default_value`, and
+/// `example`), since each is routed through its own `nix_code_block`
+/// call and a per-hunk revert of any one of them must be caught.
 #[test]
 fn test_markdown_code_block_fence_grows() -> Result<(), Box<dyn std::error::Error + Send + Sync>>
 {
+    let type_with_fence =
+        "a very long type description well past the seventy-two character wrap threshold\n```\nnested fence\n```"
+            .to_string();
     let default_with_fence =
         "a very long default value well past the seventy-two character wrap threshold\n```\nnested fence\n```"
+            .to_string();
+    let example_with_fence =
+        "a very long example value well past the seventy-two character wrap threshold\n```\nnested fence\n```"
             .to_string();
 
     let options = vec![OptionDoc {
         name: "options.test.fence".to_string(),
         description: None,
-        nix_type: "boolean".to_string(),
+        nix_type: type_with_fence.clone(),
         default_value: Some(default_with_fence.clone()),
-        example: None,
+        example: Some(example_with_fence.clone()),
         renamed_to: None,
         declarations: vec![Declaration {
             file_path: "test.nix".to_string(),
@@ -1002,11 +1020,14 @@ fn test_markdown_code_block_fence_grows() -> Result<(), Box<dyn std::error::Erro
     // four-backtick fence. Instead, build the exact expected four-
     // backtick-fenced block via `nix_code_block` directly (same pattern
     // as unit-testing `inline_code` in T2) and require the full block,
-    // fence and all, to appear verbatim.
-    let four_backtick_fenced = crate::generate::markdown::nix_code_block(&default_with_fence);
-    assert!(four_backtick_fenced.starts_with("````nix\n"));
-    assert!(four_backtick_fenced.ends_with("\n````"));
-    assert!(markdown.contains(&four_backtick_fenced));
+    // fence and all, to appear verbatim - once per call site, so
+    // reverting any single one of the three block-form hunks fails here.
+    for content in [&type_with_fence, &default_with_fence, &example_with_fence] {
+        let four_backtick_fenced = crate::generate::markdown::nix_code_block(content);
+        assert!(four_backtick_fenced.starts_with("````nix\n"));
+        assert!(four_backtick_fenced.ends_with("\n````"));
+        assert!(markdown.contains(&four_backtick_fenced));
+    }
 
     Ok(())
 }

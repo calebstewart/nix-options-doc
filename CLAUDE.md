@@ -98,7 +98,7 @@ Parallelism is rayon over *files only*; everything downstream is single-threaded
 | `src/nix_call.rs` | Low-level AST helpers: unwind curried `NODE_APPLY` chains into `(fn_name, args)`, attrset key lookup, `let`-binding and alias collection. |
 | `src/utils.rs` | Per-file driver, description cleanup (admonitions, dedent, `literalExpression` unwrapping), `${var}` replacement, walkdir filtering, anchor slugs, `KEY=VALUE` arg parser. |
 | `src/error.rs` | `NixDocError` (thiserror) and its `From` conversions. |
-| `src/generate/markdown.rs` | `## [\`name\`](file#Lnn)` headings with an explicit `<a id>` anchor above each. Renders **Condition:** and **Also declared in:** sections. |
+| `src/generate/markdown.rs` | `## [\`name\`](<file#Lnn>)` headings with an explicit `<a id>` anchor above each. Renders **Condition:** and **Also declared in:** sections. |
 | `src/generate/json.rs` | 13 lines — `serde_json::to_string_pretty` over `&[OptionDoc]`. |
 | `src/generate/csv.rs` | Fixed header; missing values become `-`; descriptions flattened to one line. |
 | `src/generate/html/` | Single self-contained HTML file. See below. |
