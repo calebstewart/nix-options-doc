@@ -25,14 +25,14 @@ pub(crate) fn longest_backtick_run(content: &str) -> usize {
     longest
 }
 
-/// Renders `content` as a CommonMark inline code span that survives arbitrary input.
+/// Renders `content` as a `CommonMark` inline code span that survives arbitrary input.
 ///
 /// # Arguments
 /// - `content`: Third-party-controlled text (a Nix type, default, example, or condition)
 ///   to render as an inline code span.
 ///
 /// # Returns
-/// A `` `-delimited (or longer-delimited) span. Per CommonMark §6, backslash escapes do
+/// A backtick-delimited (or longer-delimited) span. Per `CommonMark` §6, backslash escapes do
 /// not work inside code spans, so the only correct way to embed a backtick is a delimiter
 /// run one backtick longer than the longest run already present in the content, padded
 /// with a single space on each side when needed to avoid the content's own backticks (or
@@ -89,7 +89,7 @@ pub(crate) fn nix_code_block(content: &str) -> String {
     format!("{fence}nix\n{content}\n{fence}")
 }
 
-/// Wraps a sanitized link target in a CommonMark angle-bracket link destination.
+/// Wraps a sanitized link target in a `CommonMark` angle-bracket link destination.
 ///
 /// # Arguments
 /// - `target`: The raw declaration file path to link to.

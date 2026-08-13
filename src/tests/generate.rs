@@ -754,8 +754,8 @@ fn test_generate_doc_empty_options_html() -> Result<(), Box<dyn std::error::Erro
     Ok(())
 }
 
-/// Backslash-escaping a backtick has no effect inside a CommonMark code
-/// span (CommonMark §6: backslash escapes don't work there), so the old
+/// Backslash-escaping a backtick has no effect inside a `CommonMark` code
+/// span (`CommonMark` §6: backslash escapes don't work there), so the old
 /// `.replace('`', "\\`")` on the type field left both a stray `\` in the
 /// output *and* a code span that a real backtick in the content still
 /// closed early. `**Default:**`/`**Example:**` got no handling at all.
@@ -802,7 +802,7 @@ fn test_markdown_inline_code_escapes_backticks(
 
 /// Unit-tests `inline_code` directly (precedent: `utils::anchor_slug` is
 /// unit-tested the same way) to lock in the exact delimiter-length and
-/// padding rules from CommonMark §6, guarding against a plausible wrong
+/// padding rules from `CommonMark` §6, guarding against a plausible wrong
 /// fix that hard-codes a two-backtick delimiter regardless of content.
 #[test]
 fn test_markdown_inline_code_delimiter_and_padding() {
@@ -830,7 +830,7 @@ fn test_markdown_inline_code_delimiter_and_padding() {
 
 /// `parser::format_condition` hands back the raw source text of a guarding
 /// `mkIf` predicate verbatim, which can span multiple lines. A code span
-/// cannot contain a line break at all - CommonMark ends the enclosing
+/// cannot contain a line break at all - `CommonMark` ends the enclosing
 /// paragraph/list item at the newline instead - so `inline_code` must
 /// collapse internal whitespace (including the newline) to single spaces
 /// before rendering the condition. This test guards that collapsing.
@@ -872,7 +872,7 @@ fn test_markdown_condition_is_single_line() -> Result<(), Box<dyn std::error::Er
 }
 
 /// A declaration file path containing a space or unbalanced parentheses
-/// breaks a bare (non-angle-bracket) CommonMark link destination outright.
+/// breaks a bare (non-angle-bracket) `CommonMark` link destination outright.
 /// Guards both the heading link (primary declaration) and the "Also
 /// declared in" list (secondary declaration) now wrapping their
 /// destinations in `<...>`.
@@ -916,7 +916,7 @@ fn test_markdown_link_destination_survives_spaces_and_parens(
 }
 
 /// Without escaping, wrapping a destination in `<...>` is not by itself
-/// enough: a `<` or `>` already present in the content is CommonMark
+/// enough: a `<` or `>` already present in the content is `CommonMark`
 /// syntax too, and an unescaped `>` closes the destination early. Guards
 /// against a plausible wrong fix that wraps in angle brackets without
 /// escaping the content, and locks in the backslash-doubling needed for
@@ -1032,7 +1032,7 @@ fn test_markdown_code_block_fence_grows() -> Result<(), Box<dyn std::error::Erro
     Ok(())
 }
 
-/// Code spans bind more tightly than link brackets in CommonMark, so
+/// Code spans bind more tightly than link brackets in `CommonMark`, so
 /// `[` and `]` appearing inside link text that is itself a code span
 /// (e.g. a declaration file path used as link text) already render
 /// correctly with no extra handling - verified against comrak while
