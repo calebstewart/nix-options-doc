@@ -177,9 +177,13 @@ fn process_description(description: &str, replacements: &HashMap<String, String>
 /// Interpolations are re-emitted as their `${...}` source text rather
 /// than dropped, because they are statically unresolvable here and
 /// `utils::apply_replacements` (the `--replace` flag) still has to be
-/// able to see and substitute them downstream. One consequence worth
-/// knowing: an escaped `''${name}` now unescapes to `${name}`, which
-/// `--replace name=...` may then substitute.
+/// able to see and substitute them downstream. This doesn't change
+/// *what* `--replace` can substitute - the raw source already contained
+/// `${name}` and `VAR_REGEX` (`utils.rs`) already matched it there too.
+/// The only difference is that a `''`-string's own `''$` escape (a
+/// literal `$` that is *not* the start of an interpolation) is now
+/// correctly unescaped instead of leaking its stray `''` into the
+/// output.
 ///
 /// Falls back to the raw (dedented, trimmed) source text for anything
 /// that is not a well-formed string node - both because a description

@@ -2493,6 +2493,12 @@ fn test_malformed_string_degrades_without_panic(
 /// source text rather than dropping them - otherwise `--replace` (which
 /// substitutes into that same `${var}` syntax downstream) would have
 /// nothing left to match.
+///
+/// Like `test_malformed_string_degrades_without_panic`, this is a
+/// lock-in guard rather than a regression test - it already passed
+/// before the `string_text` rewrite. Keep it anyway: it's what would
+/// catch a plausible *wrong* implementation of `normalized_parts` handling
+/// that dropped `InterpolPart::Interpolation` instead of re-emitting it.
 #[test]
 fn test_description_interpolation_still_replaceable(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
