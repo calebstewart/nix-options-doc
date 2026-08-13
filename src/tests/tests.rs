@@ -2206,3 +2206,326 @@ fn test_link_target_requires_real_http_authority(
 
     Ok(())
 }
+
+/// `string_text` used to extract string content by `trim_matches(['"',
+/// '\''])`, which strips *any run* of quote characters off either end,
+/// not just the delimiters that actually opened/closed the string. Any
+/// description that legitimately starts or ends with a quote character
+/// (or has one immediately inside the delimiter) lost it, sometimes
+/// losing the whole string (see the `"'"` case below). This test locks
+/// down that exactly one delimiter pair is removed and nothing else.
+#[test]
+fn test_description_preserves_boundary_quotes(
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let temp_dir = TempDir::new()?;
+    let content = r#"
+{
+  options.test = {
+    trailingQuote = lib.mkOption {
+      type = lib.types.str;
+      description = "The greeting to use, e.g. 'howdy'";
+    };
+    fullyQuoted = lib.mkOption {
+      type = lib.types.str;
+      description = "\"Fully quoted phrase\"";
+    };
+    indentedBoundaryQuotes = lib.mkOption {
+      type = lib.types.str;
+      description = ''"Quoted in an indented string"'';
+    };
+    middleQuotes = lib.mkOption {
+      type = lib.types.str;
+      description = "He said \"hi\" in the middle";
+    };
+  };
+}
+"#;
+    create_test_file(temp_dir.path(), "flake.nix", content)?;
+
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
+    let find = |name: &str| {
+        options
+            .iter()
+            .find(|o| o.name == format!("options.test.{name}"))
+            .unwrap_or_else(|| panic!("option {name} not found"))
+    };
+
+    assert_eq!(
+        find("trailingQuote").description.as_deref(),
+        Some("The greeting to use, e.g. 'howdy'")
+    );
+    assert_eq!(
+        find("fullyQuoted").description.as_deref(),
+        Some("\"Fully quoted phrase\"")
+    );
+    assert_eq!(
+        find("indentedBoundaryQuotes").description.as_deref(),
+        Some("\"Quoted in an indented string\"")
+    );
+    assert_eq!(
+        find("middleQuotes").description.as_deref(),
+        Some("He said \"hi\" in the middle")
+    );
+
+    Ok(())
+}
+
+/// `string_text` used to hand back the raw source text between the
+/// (mis-trimmed) delimiters, so Nix escape sequences like `\"`, `\\`,
+/// `\n` and `\t` survived verbatim as two-character sequences instead of
+/// being interpreted. This is the same underlying bug as the boundary
+/// quote loss (raw source used as a value) - fixing one without the
+/// other would still leave `He said \"hi\"` in the output.
+#[test]
+fn test_description_unescapes_escape_sequences(
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let temp_dir = TempDir::new()?;
+    // Use a raw Rust string literal so the backslashes below reach the
+    // Nix source file verbatim (not interpreted by Rust first).
+    let content = r#"
+{
+  options.test.escapes = lib.mkOption {
+    type = lib.types.str;
+    description = "Escapes: newline\nhere, tab\there, backslash\\here";
+  };
+}
+"#;
+    create_test_file(temp_dir.path(), "flake.nix", content)?;
+
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
+    let escapes = options
+        .iter()
+        .find(|o| o.name == "options.test.escapes")
+        .unwrap();
+
+    assert_eq!(
+        escapes.description.as_deref(),
+        Some("Escapes: newline\nhere, tab\there, backslash\\here")
+    );
+
+    Ok(())
+}
+
+/// Nix's `''`-string escape forms (`''$` for a literal `$`, `'''` for a
+/// literal `''`) are distinct from double-quoted string escapes and were
+/// equally unhandled by the old raw-text `string_text`. `normalized_parts`
+/// handles both in the same pass as ordinary escapes.
+#[test]
+fn test_indented_description_unescapes_dollar_and_quote_escapes(
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let temp_dir = TempDir::new()?;
+    let content = r#"
+{
+  options.test.indentedEscapes = lib.mkOption {
+    type = lib.types.str;
+    description = ''Literal ''${escaped} and '''quotes''' here'';
+  };
+}
+"#;
+    create_test_file(temp_dir.path(), "flake.nix", content)?;
+
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
+    let indented = options
+        .iter()
+        .find(|o| o.name == "options.test.indentedEscapes")
+        .unwrap();
+
+    assert_eq!(
+        indented.description.as_deref(),
+        Some("Literal ${escaped} and ''quotes'' here")
+    );
+
+    Ok(())
+}
+
+/// The same `string_text` bug affects every call site that routes
+/// through it, not just `mkOption`'s `description` field:
+/// `mkEnableOption`'s subject text, `mkPackageOption`'s `extraDescription`
+/// override, and `mkRemovedOptionModule`'s removal message.
+#[test]
+fn test_option_helper_descriptions_preserve_quotes(
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let temp_dir = TempDir::new()?;
+    let content = r#"
+{
+  options.test.enable = lib.mkEnableOption "support for 'foo'";
+
+  options.test.pkg = lib.mkPackageOption pkgs "hello" {
+    extraDescription = "Use \"hello\"";
+  };
+
+  imports = [
+    (lib.mkRemovedOptionModule [ "services" "goneName" ] "See 'docs' for details.")
+  ];
+}
+"#;
+    create_test_file(temp_dir.path(), "flake.nix", content)?;
+
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
+
+    let enable = options
+        .iter()
+        .find(|o| o.name == "options.test.enable")
+        .unwrap();
+    assert_eq!(
+        enable.description.as_deref(),
+        Some("Whether to enable support for 'foo'.")
+    );
+
+    let pkg = options
+        .iter()
+        .find(|o| o.name == "options.test.pkg")
+        .unwrap();
+    assert!(
+        pkg.description
+            .as_deref()
+            .unwrap()
+            .ends_with("Use \"hello\""),
+        "got: {:?}",
+        pkg.description
+    );
+
+    let removed = options
+        .iter()
+        .find(|o| o.name == "options.services.goneName")
+        .unwrap();
+    assert!(
+        removed
+            .description
+            .as_deref()
+            .unwrap()
+            .contains("See 'docs' for details."),
+        "got: {:?}",
+        removed.description
+    );
+
+    Ok(())
+}
+
+/// Locks the two intentional behavior changes from properly applying
+/// Nix's own indentation semantics (via `normalized_parts`) instead of
+/// `custom_dedent`, which dedented by the string's own *common* indent
+/// across all lines after the first:
+///
+/// 1. A `''`-string whose content starts on its own line right after
+///    `''` no longer carries a leading `\n` in the decoded value.
+/// 2. A `''`-string whose content starts on the *same* line as the
+///    opening `''` computes a minimum indentation of 0 (Nix considers
+///    only *subsequent* lines when computing the common indent), so
+///    later lines keep their indentation rather than being flattened -
+///    matching what `nix eval` produces.
+#[test]
+fn test_indented_description_uses_nix_indentation_semantics(
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let temp_dir = TempDir::new()?;
+    let content = r#"
+{
+  options.test.leadingNewline = lib.mkOption {
+    type = lib.types.str;
+    description = ''
+      Intro:
+          code
+    '';
+  };
+  options.test.sameLineStart = lib.mkOption {
+    type = lib.types.str;
+    description = ''First line
+        second
+    '';
+  };
+}
+"#;
+    create_test_file(temp_dir.path(), "flake.nix", content)?;
+
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
+
+    let leading = options
+        .iter()
+        .find(|o| o.name == "options.test.leadingNewline")
+        .unwrap();
+    assert_eq!(
+        leading.description.as_deref(),
+        Some("Intro:\n    code\n")
+    );
+
+    let same_line = options
+        .iter()
+        .find(|o| o.name == "options.test.sameLineStart")
+        .unwrap();
+    assert_eq!(
+        same_line.description.as_deref(),
+        Some("First line\n        second\n")
+    );
+
+    Ok(())
+}
+
+/// Guard test - passes both before and against the fix, but is the test
+/// that fails (with a panic, not an assertion failure) if the
+/// well-formedness guard is ever removed from `string_text`: rnix
+/// 0.14's `ast::Str::normalized_parts` asserts on the error-recovery
+/// nodes an unterminated string produces, which would turn this crate's
+/// deliberate "unparseable input degrades to zero options" convention
+/// into a process-wide panic. Keep this test even though it doesn't
+/// currently distinguish old vs. new behavior - it's the regression
+/// guard for the guard.
+#[test]
+fn test_malformed_string_degrades_without_panic(
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let temp_dir = TempDir::new()?;
+    let content = r#"
+{
+  options.test.broken = lib.mkOption {
+    type = lib.types.str;
+    description = "unterminated
+"#;
+    create_test_file(temp_dir.path(), "flake.nix", content)?;
+
+    // Must not panic, regardless of how many (or zero) options it finds.
+    let result = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false);
+    assert!(result.is_ok());
+
+    Ok(())
+}
+
+/// Interpolations in a description (`${...}`) are statically
+/// unresolvable, so `string_text` must re-emit them as their `${...}`
+/// source text rather than dropping them - otherwise `--replace` (which
+/// substitutes into that same `${var}` syntax downstream) would have
+/// nothing left to match.
+///
+/// Like `test_malformed_string_degrades_without_panic`, this is a
+/// lock-in guard rather than a regression test - it already passed
+/// before the `string_text` rewrite. Keep it anyway: it's what would
+/// catch a plausible *wrong* implementation of `normalized_parts` handling
+/// that dropped `InterpolPart::Interpolation` instead of re-emitting it.
+#[test]
+fn test_description_interpolation_still_replaceable(
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let temp_dir = TempDir::new()?;
+    let content = r#"
+{
+  options.test.interpolated = lib.mkOption {
+    type = lib.types.str;
+    description = "Uses ${name} and ${config.foo}";
+  };
+}
+"#;
+    create_test_file(temp_dir.path(), "flake.nix", content)?;
+
+    let mut replacements = HashMap::new();
+    replacements.insert("name".to_string(), "NixOS".to_string());
+
+    let options = collect_options(temp_dir.path(), &[], &replacements, false, false)?;
+    let interpolated = options
+        .iter()
+        .find(|o| o.name == "options.test.interpolated")
+        .unwrap();
+
+    assert_eq!(
+        interpolated.description.as_deref(),
+        Some("Uses NixOS and ${config.foo}")
+    );
+
+    Ok(())
+}
