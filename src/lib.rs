@@ -376,8 +376,14 @@ pub fn prepare_path(cli: &Cli) -> Result<(PathBuf, Option<TempDir>), NixDocError
             .unwrap_or_else(|| std::num::NonZeroU32::new(1).unwrap()),
     );
 
+    // `with_ref_name` validates the ref name locally, before any network
+    // round-trip, and `--branch` is arbitrary user input - a typo like
+    // "my branch" or "foo..bar" must produce the same clean error as every
+    // other git failure in this function, not a panic.
     if let Some(ref branch) = cli.git.branch {
-        prepare_clone = prepare_clone.with_ref_name(Some(branch)).unwrap();
+        prepare_clone = prepare_clone.with_ref_name(Some(branch)).map_err(|e| {
+            NixDocError::GitOperation(format!("Invalid branch or tag name '{branch}': {e}"))
+        })?;
     }
     let (mut prepare_checkout, _) = prepare_clone
         .with_shallow(shallow)
