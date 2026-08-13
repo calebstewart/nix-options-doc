@@ -2,7 +2,9 @@
 
 A command-line tool that generates comprehensive, multi-format documentation for NixOS module options.
 
-A live example of the generated documentation can be found at: [Thunderbottom/flakes](https://github.com/Thunderbottom/flakes/blob/main/options.md)
+A live example of the generated documentation can be found at
+[Thunderbottom/flakes](https://github.com/Thunderbottom/flakes/blob/main/options.md),
+produced by the upstream project this tool was forked from.
 
 ## Why?
 
