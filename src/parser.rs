@@ -13,6 +13,60 @@ use rnix::{SyntaxKind, SyntaxNode};
 use rowan::ast::AstNode;
 use std::collections::HashMap;
 
+/// Per-file accounting for how many options parsing has emitted so far,
+/// used to stop submodule expansion before it fans out combinatorially
+/// (nix-options-doc#21).
+///
+/// This is a single mutable value threaded through the whole traversal of
+/// one file, *deliberately* unlike `submodule_stack` (which is copied per
+/// branch because it answers a per-path question). The hazard here is the
+/// cumulative total across every branch, so sibling branches must share
+/// one counter.
+///
+/// One counter is created per file in [`crate::utils::process_nix_file`],
+/// so the cap applies per file. It is never shared across files: rayon
+/// parallelises over files (see `crate::collect_options`), and a shared
+/// counter would make which file gets truncated depend on thread
+/// scheduling, destroying the run-to-run determinism `nix_files.sort()`
+/// exists to guarantee.
+#[derive(Default)]
+pub struct ExpansionBudget {
+    emitted: usize,
+    warned: bool,
+}
+
+impl ExpansionBudget {
+    /// Creates a fresh budget for one file.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Records that one more `OptionDoc` has been emitted for this file.
+    fn record_option(&mut self) {
+        self.emitted += 1;
+    }
+
+    /// Reports whether this file has emitted enough options that further
+    /// submodule expansion should stop.
+    fn is_exhausted(&self) -> bool {
+        self.emitted >= types::MAX_SUBMODULE_EXPANSION_OPTIONS
+    }
+
+    /// Warns that expansion was truncated, at most once per file - the
+    /// check fires on every subsequent expansion attempt, which on a
+    /// pathological file is thousands of times.
+    fn warn_once(&mut self, file_path: &str) {
+        if !self.warned {
+            self.warned = true;
+            log::warn!(
+                "{file_path}: stopped expanding submodule options after {} entries; \
+                 output for this file is truncated",
+                types::MAX_SUBMODULE_EXPANSION_OPTIONS
+            );
+        }
+    }
+}
+
 /// Recursively traverses the syntax tree of a Nix file to extract option definitions.
 ///
 /// # Arguments
@@ -30,6 +84,10 @@ use std::collections::HashMap;
 ///   being expanded on this path, innermost last (see [`parse_attrset`]).
 ///   Forwarded unchanged; only the `mkOption` submodule-expansion arm in
 ///   `parse_attrset` grows it.
+/// - `budget`: Per-file cap on emitted options, shared by every branch of
+///   this file's traversal (unlike `submodule_stack`, which is per-path).
+///   Submodule expansion stops once it is exhausted; see
+///   [`ExpansionBudget`].
 ///
 /// # Returns
 /// A vector of `OptionDoc` structs representing the found options or an error.
@@ -44,6 +102,7 @@ pub fn visit_node(
     let_bindings: &HashMap<String, SyntaxNode>,
     condition: Option<&str>,
     submodule_stack: &[rnix::TextRange],
+    budget: &mut ExpansionBudget,
 ) -> Result<Vec<OptionDoc>, Box<dyn std::error::Error + Send + Sync>> {
     let mut options = Vec::new();
 
@@ -71,6 +130,7 @@ pub fn visit_node(
                     let_bindings,
                     condition,
                     submodule_stack,
+                    budget,
                 )?;
                 options.append(&mut nested_options);
             }
@@ -92,6 +152,7 @@ pub fn visit_node(
             let_bindings,
             Some(&new_condition),
             submodule_stack,
+            budget,
         )?;
         options.append(&mut child_options);
     } else {
@@ -107,6 +168,7 @@ pub fn visit_node(
                 let_bindings,
                 condition,
                 submodule_stack,
+                budget,
             )?;
             options.append(&mut child_options);
         }
@@ -326,6 +388,10 @@ fn scan_option_overrides(
 ///   [`types::MAX_SUBMODULE_DEPTH`], so self-referential `let`-bound
 ///   submodule types (nix-options-doc#6) terminate instead of recursing
 ///   forever.
+/// - `budget`: Per-file cap on emitted options, shared by every branch of
+///   this file's traversal (unlike `submodule_stack`, which is per-path).
+///   Submodule expansion stops once it is exhausted; see
+///   [`ExpansionBudget`].
 ///
 /// # Returns
 /// A vector of `OptionDoc` structs representing the options in the attribute set or an error.
@@ -340,6 +406,7 @@ fn parse_attrset(
     let_bindings: &HashMap<String, SyntaxNode>,
     condition: Option<&str>,
     submodule_stack: &[rnix::TextRange],
+    budget: &mut ExpansionBudget,
 ) -> Result<Vec<OptionDoc>, Box<dyn std::error::Error + Send + Sync>> {
     let mut options = Vec::new();
     let node = &unwrap_paren(node);
@@ -358,6 +425,7 @@ fn parse_attrset(
                     let_bindings,
                     condition,
                     submodule_stack,
+                    budget,
                 )?;
                 options.append(&mut child_options);
             }
@@ -387,6 +455,7 @@ fn parse_attrset(
                                 let_bindings,
                                 condition,
                                 submodule_stack,
+                                budget,
                             )?;
                             options.append(&mut nested);
                         }
@@ -406,6 +475,7 @@ fn parse_attrset(
                             let_bindings,
                             Some(&new_condition),
                             submodule_stack,
+                            budget,
                         )?;
                         options.append(&mut nested);
                     }
@@ -432,6 +502,7 @@ fn parse_attrset(
                             .unwrap_or_default()
                     });
 
+                    budget.record_option();
                     options.push(OptionDoc {
                         name: current_prefix.to_string(),
                         description: Some(format!("Whether to enable {subject}.")),
@@ -491,6 +562,7 @@ fn parse_attrset(
                         }
                     }
 
+                    budget.record_option();
                     options.push(OptionDoc {
                         name: current_prefix.to_string(),
                         description,
@@ -528,6 +600,16 @@ fn parse_attrset(
                                 log::debug!(
                                     "Not expanding submodule for {current_prefix}: recursive or too deeply nested submodule type"
                                 );
+                            } else if budget.is_exhausted() {
+                                // Depth is bounded above, but breadth is
+                                // independent of depth: a wide, acyclic,
+                                // comfortably-shallow tree of distinct
+                                // submodule bodies still expands to ~b^d
+                                // options (nix-options-doc#21). Stop
+                                // expanding once this file has produced
+                                // implausibly many options, keeping what
+                                // was found rather than failing the run.
+                                budget.warn_once(file_path);
                             } else {
                                 let mut nested_stack = submodule_stack.to_vec();
                                 nested_stack.push(body_range);
@@ -551,6 +633,7 @@ fn parse_attrset(
                                         let_bindings,
                                         condition,
                                         &nested_stack,
+                                        budget,
                                     )?;
                                     options.append(&mut nested);
                                 }
@@ -562,6 +645,7 @@ fn parse_attrset(
                                 // as a placeholder entry rather than silently
                                 // dropping it.
                                 if let Some(freeform_type_node) = types::find_freeform_type(&body) {
+                                    budget.record_option();
                                     options.push(OptionDoc {
                                         name: format!("{}.<freeform>", nested_prefix),
                                         description: Some(
@@ -633,6 +717,7 @@ fn parse_attrset(
                         .and_then(|attr_set| find_attr(attr_set, "example"))
                         .map(|v| render_value(&v, aliases));
 
+                    budget.record_option();
                     options.push(OptionDoc {
                         name: current_prefix.to_string(),
                         description: Some(description),
@@ -666,6 +751,7 @@ fn parse_attrset(
                     let_bindings,
                     condition,
                     submodule_stack,
+                    budget,
                 )?;
                 options.append(&mut nested_options);
             }
@@ -685,6 +771,7 @@ fn parse_attrset(
                     let_bindings,
                     condition,
                     submodule_stack,
+                    budget,
                 )?;
                 options.append(&mut nested_options);
             }
@@ -710,6 +797,7 @@ fn parse_attrset(
                             let_bindings,
                             condition,
                             submodule_stack,
+                            budget,
                         )?;
 
                         let rhs_node = unwrap_paren(rhs.syntax());

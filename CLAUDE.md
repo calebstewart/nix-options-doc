@@ -93,7 +93,7 @@ Parallelism is rayon over *files only*; everything downstream is single-threaded
 |---|---|
 | `src/main.rs` | Thin driver: init logging (default filter `warn`), parse CLI, run the four stages, write to stdout or `--out`. Both empty-result paths (`collect_options` finds nothing, or filters match nothing) log a warning and fall through instead of returning early, so a document is always generated and `--out` is always written. |
 | `src/lib.rs` | Crate root. CLI structs, `OptionDoc`/`Declaration`, and the four pipeline functions. |
-| `src/parser.rs` | rnix tree traversal. Recognizes `mkOption`, `mkEnableOption`, `mkPackageOption`, `mkMerge`, `mkIf`, `let…in`, `with`, and `<expr> // { … }` overrides. Handles inline submodule recursion (bounded by `MAX_SUBMODULE_DEPTH` in `src/types.rs`, to guard against cyclic submodule types) and `freeformType`. |
+| `src/parser.rs` | rnix tree traversal. Recognizes `mkOption`, `mkEnableOption`, `mkPackageOption`, `mkMerge`, `mkIf`, `let…in`, `with`, and `<expr> // { … }` overrides. Handles inline submodule recursion (bounded by `MAX_SUBMODULE_DEPTH` for depth and `MAX_SUBMODULE_EXPANSION_OPTIONS` for total fan-out, both in `src/types.rs`) and `freeformType`. |
 | `src/types.rs` | Formats Nix type expressions into nixpkgs-style prose (`nullOr` → "null or …", `listOf` → "list of …"). Falls back to raw dedented source rather than guessing. |
 | `src/nix_call.rs` | Low-level AST helpers: unwind curried `NODE_APPLY` chains into `(fn_name, args)`, attrset key lookup, `let`-binding and alias collection. |
 | `src/utils.rs` | Per-file driver, description cleanup (admonitions, dedent, `literalExpression` unwrapping), `${var}` replacement, walkdir filtering, anchor slugs, `KEY=VALUE` arg parser. |

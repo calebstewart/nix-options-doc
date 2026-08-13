@@ -1232,3 +1232,88 @@ fn test_description_interpolation_still_replaceable(
 
     Ok(())
 }
+
+/// A wide-but-shallow chain of distinct `let`-bound submodule types - each
+/// `m{i}` declares three options of type `m{i-1}` - fans out combinatorially
+/// (~3^depth options) while staying well under `MAX_SUBMODULE_DEPTH` and
+/// never revisiting a body on any single path, so neither existing guard in
+/// the submodule-expansion arm of `parse_attrset` fires
+/// (nix-options-doc#21). Without a total-work budget this either runs for
+/// tens of seconds or OOMs; this test asserts the emitted option count is
+/// bounded, so a regression here fails fast instead of hanging.
+#[test]
+fn test_submodule_fanout_is_bounded() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let temp_dir = TempDir::new()?;
+
+    let mut content = String::from("{ lib, ... }:\nlet\n");
+    content.push_str(
+        "  m0 = lib.types.submodule {\n    options = {\n      leaf = lib.mkOption {\n        type = lib.types.str;\n        description = \"Leaf value.\";\n      };\n    };\n  };\n",
+    );
+    for i in 1..=9 {
+        let prev = i - 1;
+        content.push_str(&format!(
+            "  m{i} = lib.types.submodule {{\n    options = {{\n      o0 = lib.mkOption {{ type = m{prev}; description = \"o0\"; }};\n      o1 = lib.mkOption {{ type = m{prev}; description = \"o1\"; }};\n      o2 = lib.mkOption {{ type = m{prev}; description = \"o2\"; }};\n    }};\n  }};\n"
+        ));
+    }
+    content.push_str(
+        "in\n{\n  options.services.demo.root = lib.mkOption {\n    type = m9;\n    description = \"Root option.\";\n  };\n}\n",
+    );
+
+    create_test_file(temp_dir.path(), "fanout.nix", &content)?;
+
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
+
+    // The budget really was the thing that stopped it: the input is
+    // genuinely pathological, not accidentally small.
+    assert!(options.len() >= crate::types::MAX_SUBMODULE_EXPANSION_OPTIONS);
+    // The cap actually bounds the result, with slack for the bounded
+    // overshoot documented on the submodule-expansion arm in
+    // `src/parser.rs` (in-flight frames finish their own bodies' direct
+    // options after the budget is exhausted).
+    assert!(options.len() < crate::types::MAX_SUBMODULE_EXPANSION_OPTIONS + 1_000);
+
+    assert!(options
+        .iter()
+        .any(|o| o.name == "options.services.demo.root"));
+
+    Ok(())
+}
+
+/// Guards against tempting-but-wrong fixes for nix-options-doc#21, such as
+/// lowering `MAX_SUBMODULE_DEPTH` or implementing the expansion budget as a
+/// depth/count limit that also truncates legitimate deep-but-narrow module
+/// chains. A chain of 21 distinct submodule levels, each declaring exactly
+/// one option, is well under `MAX_SUBMODULE_DEPTH` (32) and emits nowhere
+/// near `MAX_SUBMODULE_EXPANSION_OPTIONS` (10,000) options, so it must
+/// expand in full, all the way to the deepest leaf.
+#[test]
+fn test_deep_narrow_submodule_chain_still_fully_expands(
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let temp_dir = TempDir::new()?;
+
+    let mut content = String::from("{ lib, ... }:\nlet\n");
+    content.push_str(
+        "  m0 = lib.types.submodule {\n    options = {\n      leaf = lib.mkOption {\n        type = lib.types.str;\n        description = \"Leaf value.\";\n      };\n    };\n  };\n",
+    );
+    for i in 1..=20 {
+        let prev = i - 1;
+        content.push_str(&format!(
+            "  m{i} = lib.types.submodule {{\n    options = {{\n      down = lib.mkOption {{ type = m{prev}; description = \"down\"; }};\n    }};\n  }};\n"
+        ));
+    }
+    content.push_str(
+        "in\n{\n  options.services.demo.root = lib.mkOption {\n    type = m20;\n    description = \"Root option.\";\n  };\n}\n",
+    );
+
+    create_test_file(temp_dir.path(), "deep_narrow.nix", &content)?;
+
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
+
+    let deepest = format!("options.services.demo.root{}.leaf", ".down".repeat(20));
+    assert!(options.iter().any(|o| o.name == deepest));
+
+    // Root + 20 `down` options + the final `leaf` - nothing truncated.
+    assert_eq!(options.len(), 22);
+
+    Ok(())
+}

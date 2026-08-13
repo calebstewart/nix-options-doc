@@ -16,9 +16,33 @@ use std::collections::HashMap;
 
 /// Backstop cap on how deep submodule/type-alias resolution will recurse.
 /// Cycle detection (below, and in `parser`) is the real termination
-/// condition; this only bounds pathological but acyclic chains so a
-/// generated file can't blow the stack. Real-world nesting is <10 deep.
+/// condition for *recursive* types; this bounds the recursion depth of an
+/// acyclic-but-pathological chain of distinct bodies so a generated file
+/// can't blow the stack. It bounds *depth only* - it says nothing about
+/// how much total work an expansion does, because depth and breadth are
+/// independent: a wide-but-shallow tree stays far under this cap while
+/// still expanding combinatorially (nix-options-doc#21). That failure mode
+/// is bounded separately by [`MAX_SUBMODULE_EXPANSION_OPTIONS`].
+/// Real-world nesting is <10 deep.
 pub(crate) const MAX_SUBMODULE_DEPTH: usize = 32;
+
+/// Backstop cap on how many options a single file may emit before the
+/// parser stops expanding submodule bodies.
+///
+/// Submodule expansion is the only part of parsing whose cost is not
+/// bounded by the size of the source file: `n` distinct submodule bodies,
+/// each declaring options of the next one's type, expand into ~b^d nodes
+/// (nix-options-doc#21). Every expansion is triggered by an `mkOption`
+/// that has already pushed an `OptionDoc`, so counting emitted options
+/// bounds the emitted tree, the peak memory, and the total work all at
+/// once.
+///
+/// The cap is deliberately far above anything real: the largest single
+/// file in nixpkgs' `nixos/modules` emits 181 options. Hitting this means
+/// the input is pathological, so - per this crate's graceful-degradation
+/// convention - expansion stops with a `log::warn!` and the options found
+/// so far are still emitted, rather than erroring out.
+pub(crate) const MAX_SUBMODULE_EXPANSION_OPTIONS: usize = 10_000;
 
 /// Formats a type expression node into a human-readable description.
 pub fn format_type(node: &SyntaxNode, aliases: &HashMap<String, String>) -> String {
