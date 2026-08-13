@@ -13,7 +13,12 @@ use std::io::Write;
 /// # Returns
 /// Returns `Ok(())` if the application completes successfully; otherwise returns an error with details.
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    env_logger::init();
+    // `env_logger::init()` defaults to the `error` level when `RUST_LOG` is
+    // unset, which silently drops every `log::warn!` in the program - including
+    // "no options found" and skipped-directory warnings, the two things a user
+    // most needs to see. `default_filter_or` only applies when `RUST_LOG` is
+    // unset or empty, so `RUST_LOG=debug`/`RUST_LOG=error` still win. See #9.
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
     let cli = Cli::parse();
 
     if let Some(shell) = cli.generate_completions {
@@ -42,20 +47,27 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         cli.util.follow_symlinks,
     )?;
 
+    // Both "empty" outcomes below are warnings, not errors: a tree with no
+    // options is a legitimate thing to point this tool at. But they must still
+    // be *observable*, so we fall through and generate the (empty) document
+    // rather than returning early. That way `--out` is always written - the
+    // previous behaviour left a stale file from an earlier run in place, which
+    // a pipeline consuming it could not distinguish from success. The exit code
+    // deliberately stays 0; see #9.
     if options.is_empty() {
         log::warn!("No NixOS options found in the specified path");
-        return Ok(());
     }
 
     // Apply module filters if specified
     let filtered_options = filter_options(&options, &cli);
 
-    if filtered_options.is_empty() {
+    // Guarded on `!options.is_empty()` so an empty input tree produces one
+    // warning, not two saying the same thing.
+    if !options.is_empty() && filtered_options.is_empty() {
         log::warn!(
             "No options match the specified filters (from {} total options)",
             options.len()
         );
-        return Ok(());
     }
 
     log::debug!("Generating documentation...");

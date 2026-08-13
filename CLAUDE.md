@@ -85,7 +85,7 @@ Parallelism is rayon over *files only*; everything downstream is single-threaded
 
 | File | Responsibility |
 |---|---|
-| `src/main.rs` | Thin driver: init logging, parse CLI, run the four stages, write to stdout or `--out`. |
+| `src/main.rs` | Thin driver: init logging (default filter `warn`), parse CLI, run the four stages, write to stdout or `--out`. Both empty-result paths (`collect_options` finds nothing, or filters match nothing) log a warning and fall through instead of returning early, so a document is always generated and `--out` is always written. |
 | `src/lib.rs` | Crate root. CLI structs, `OptionDoc`/`Declaration`, and the four pipeline functions. |
 | `src/parser.rs` | rnix tree traversal. Recognizes `mkOption`, `mkEnableOption`, `mkPackageOption`, `mkMerge`, `mkIf`, `let…in`, `with`, and `<expr> // { … }` overrides. Handles inline submodule recursion (bounded by `MAX_SUBMODULE_DEPTH` in `src/types.rs`, to guard against cyclic submodule types) and `freeformType`. |
 | `src/types.rs` | Formats Nix type expressions into nixpkgs-style prose (`nullOr` → "null or …", `listOf` → "list of …"). Falls back to raw dedented source rather than guessing. |
@@ -135,8 +135,11 @@ Parallelism is rayon over *files only*; everything downstream is single-threaded
 ## Non-obvious conventions
 
 - **Tests are `include!`d, not a normal test target.** `src/tests/tests.rs` (~2,730 lines,
-  55 tests) is textually included into a `#[cfg(test)] mod tests` in `src/lib.rs` so it can
-  reach private items via `use super::*`.
+  59 tests) is textually included into a `#[cfg(test)] mod tests` in `src/lib.rs` so it can
+  reach private items via `use super::*`. Process-level CLI behavior (exit status, whether
+  `--out` is written, default log visibility) can't be observed that way, so it's covered
+  instead by an integration test at `tests/cli.rs`, which *is* a normal test target because it
+  must spawn the built binary.
 - **No fixture files.** Every test builds a `tempfile::TempDir`, writes inline Nix with
   `create_test_file` (`src/tests/tests.rs`), calls `collect_options`, and asserts on the
   resulting `Vec<OptionDoc>`. Follow that pattern for new tests.
