@@ -18,9 +18,7 @@ use tempfile::TempDir;
 use walkdir::WalkDir;
 
 #[cfg(test)]
-mod tests {
-    include!("tests/tests.rs");
-}
+mod tests;
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
 pub enum OutputFormat {
