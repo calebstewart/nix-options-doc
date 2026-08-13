@@ -6,7 +6,30 @@ use crate::OptionDoc;
 use comrak::Options as ComrakOptions;
 use render::CATEGORIES;
 use std::collections::HashSet;
-use template::{HTML_TEMPLATE_HEAD, SEARCH_SCRIPT_TEMPLATE};
+use template::HTML_TEMPLATE_HEAD;
+// `SEARCH_SCRIPT_TEMPLATE` is `pub(crate)` (not just `pub(super)`, like
+// `HTML_TEMPLATE_HEAD`) and re-exported here so tests can assert directly
+// on the pristine template - e.g. that its two placeholders each appear
+// exactly once, which the `split_once().expect()` calls below rely on.
+pub(crate) use template::SEARCH_SCRIPT_TEMPLATE;
+
+/// Appends `json` to `output` escaped so it cannot influence the HTML
+/// tokenizer's script-data state. Every `<` becomes `<`, so the
+/// emitted literal contains no `<` at all - `</script`, `<!--` and
+/// `<script` are therefore all unrepresentable. U+2028/U+2029 are
+/// escaped too: valid JSON, but line terminators inside a JS string
+/// literal on pre-ES2019 engines. Both escapes are transparent to
+/// `JSON`/JS string parsing, so the runtime value is unchanged.
+fn push_script_safe_json(output: &mut String, json: &str) {
+    for ch in json.chars() {
+        match ch {
+            '<' => output.push_str("\\u003c"),
+            '\u{2028}' => output.push_str("\\u2028"),
+            '\u{2029}' => output.push_str("\\u2029"),
+            _ => output.push(ch),
+        }
+    }
+}
 
 /// Generates an HTML document containing comprehensive documentation for NixOS module options.
 ///
@@ -99,19 +122,27 @@ pub fn generate_html(options: &[OptionDoc]) -> Result<String, NixDocError> {
     output.push_str(&body);
 
     // Inject the instant search script with its per-option search index.
-    // The `</` guard prevents a description or example containing that
-    // literal text from prematurely closing the <script> tag.
     let search_index_json = serde_json::to_string(&search_index)
-        .map_err(|e| NixDocError::Serialization(e.to_string()))?
-        .replace("</", "<\\/");
+        .map_err(|e| NixDocError::Serialization(e.to_string()))?;
     let category_index_json = serde_json::to_string(&category_index)
-        .map_err(|e| NixDocError::Serialization(e.to_string()))?
-        .replace("</", "<\\/");
-    output.push_str(
-        &SEARCH_SCRIPT_TEMPLATE
-            .replace("__SEARCH_INDEX__", &search_index_json)
-            .replace("__CATEGORY_INDEX__", &category_index_json),
-    );
+        .map_err(|e| NixDocError::Serialization(e.to_string()))?;
+
+    // Split the *pristine* template once per placeholder and concatenate.
+    // A second `String::replace` pass over an already-substituted string
+    // would re-scan user data, letting a description that merely mentions
+    // `__CATEGORY_INDEX__` splice raw JSON into the middle of a JS string
+    // literal (#16).
+    let (head, rest) = SEARCH_SCRIPT_TEMPLATE
+        .split_once("__SEARCH_INDEX__")
+        .expect("SEARCH_SCRIPT_TEMPLATE contains __SEARCH_INDEX__");
+    let (middle, tail) = rest
+        .split_once("__CATEGORY_INDEX__")
+        .expect("SEARCH_SCRIPT_TEMPLATE contains __CATEGORY_INDEX__");
+    output.push_str(head);
+    push_script_safe_json(&mut output, &search_index_json);
+    output.push_str(middle);
+    push_script_safe_json(&mut output, &category_index_json);
+    output.push_str(tail);
 
     output.push_str(&format!(
         r#"    <p class="footer">generated with <a href="{}">{}</a></p>

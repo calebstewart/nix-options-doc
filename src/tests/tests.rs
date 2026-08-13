@@ -2529,3 +2529,183 @@ fn test_description_interpolation_still_replaceable(
 
     Ok(())
 }
+
+/// Extracts the JS array literal from `const <name> = …;` in the
+/// generated page. A literal newline can never occur inside the JSON
+/// (serde_json escapes them), so the first `;\n` after the declaration
+/// is its terminator.
+fn extract_js_array_literal<'a>(html: &'a str, decl: &str) -> &'a str {
+    let start = html.find(decl).expect("declaration should be present") + decl.len();
+    let end = start + html[start..].find(";\n").expect("declaration should be terminated");
+    &html[start..end]
+}
+
+/// Regression test for #16, bug 1: `generate_html` used to splice the two
+/// index arrays into the search script with two sequential
+/// `String::replace` calls (`__SEARCH_INDEX__` then `__CATEGORY_INDEX__`).
+/// The second `replace` scanned the *already-substituted* output, so a
+/// description that merely mentions the literal text `__CATEGORY_INDEX__`
+/// got matched by that second pass and had raw category-index JSON spliced
+/// into the middle of the search index's JS string literal, corrupting it.
+/// The fix (`split_once` over the pristine template) never rescans
+/// inserted data, so the placeholder text must survive verbatim as inert
+/// string content.
+#[test]
+fn test_html_search_index_survives_placeholder_text_in_description(
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let temp_dir = TempDir::new()?;
+    let content = r#"
+{
+  options.services.testA.enable = lib.mkOption {
+    type = lib.types.bool;
+    default = false;
+    description = "See __CATEGORY_INDEX__ marker here";
+  };
+  options.services.testB.enable = lib.mkOption {
+    type = lib.types.bool;
+    default = false;
+    description = "Second option description.";
+  };
+}
+"#;
+    create_test_file(temp_dir.path(), "flake.nix", content)?;
+
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
+    assert_eq!(options.len(), 2);
+
+    let html = generate_html(&options)?;
+
+    let literal = extract_js_array_literal(&html, "const searchText = ");
+    // Pre-fix, the injected raw JSON in the middle of the literal breaks
+    // JSON parsing entirely.
+    let entries: Vec<String> =
+        serde_json::from_str(literal).expect("searchText literal should be valid JSON");
+    assert!(
+        entries[0].contains("__CATEGORY_INDEX__"),
+        "expected the placeholder text to survive verbatim in {:?}",
+        entries[0]
+    );
+
+    Ok(())
+}
+
+/// Regression test for #16, bug 1: a description containing *both*
+/// placeholder markers - plus a pre-escaped `<\/script>` sequence and
+/// non-ASCII text, to make sure none of those interact badly with the
+/// fix - must still round-trip through the search index exactly.
+#[test]
+fn test_html_search_index_placeholder_text_in_both_markers(
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let temp_dir = TempDir::new()?;
+    let content = r#"
+{
+  options.services.test.enable = lib.mkOption {
+    type = lib.types.bool;
+    default = false;
+    description = "Mentions __SEARCH_INDEX__ and __CATEGORY_INDEX__ plus <\/script> and non-ascii é中.";
+  };
+}
+"#;
+    create_test_file(temp_dir.path(), "flake.nix", content)?;
+
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
+    assert_eq!(options.len(), 1);
+    let description = options[0]
+        .description
+        .clone()
+        .expect("description should be present");
+
+    let html = generate_html(&options)?;
+
+    let literal = extract_js_array_literal(&html, "const searchText = ");
+    let entries: Vec<String> =
+        serde_json::from_str(literal).expect("searchText literal should be valid JSON");
+    assert!(
+        entries[0].contains(&description),
+        "expected the full description to round-trip verbatim in {:?}",
+        entries[0]
+    );
+
+    Ok(())
+}
+
+/// Regression test for #16, bug 2 (reported in the issue's comments): a
+/// description containing the literal sequence `<!--<script>` used to
+/// drive the HTML tokenizer into script-data-double-escaped state. The
+/// page's own closing `</script>` tag then only demoted the tokenizer
+/// back to escaped state instead of ending the element, silently
+/// absorbing the rest of the document - including the footer and every
+/// later `<script>` - into the search script's text content, with no
+/// console error. The old `.replace("</", "<\\/")` guard only addressed
+/// the `</script` case; it did nothing for `<!--` or bare `<script`. The
+/// fix escapes every `<` in the serialized JSON, so none of those
+/// tokenizer-state-changing sequences can appear at all.
+#[test]
+fn test_html_search_index_escapes_angle_brackets(
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let temp_dir = TempDir::new()?;
+    let content = r#"
+{
+  options.services.test.enable = lib.mkOption {
+    type = lib.types.bool;
+    default = false;
+    description = "Payload: <!--<script>";
+  };
+}
+"#;
+    create_test_file(temp_dir.path(), "flake.nix", content)?;
+
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
+    assert_eq!(options.len(), 1);
+
+    let html = generate_html(&options)?;
+
+    let search_literal = extract_js_array_literal(&html, "const searchText = ");
+    let category_literal = extract_js_array_literal(&html, "const categoryIndex = ");
+
+    // (a) The emitted JS literal must contain no raw `<` at all - that is
+    // what makes `<!--`, `<script`, and `</script` unrepresentable.
+    assert!(
+        !search_literal.contains('<'),
+        "searchText literal should contain no raw '<': {search_literal:?}"
+    );
+    assert!(
+        !category_literal.contains('<'),
+        "categoryIndex literal should contain no raw '<': {category_literal:?}"
+    );
+
+    // (b) The escape is data-preserving: the entry still parses and still
+    // contains the literal payload text once JSON-decoded.
+    let entries: Vec<String> =
+        serde_json::from_str(search_literal).expect("searchText literal should be valid JSON");
+    assert!(entries[0].contains("<!--<script>"));
+
+    // (c) The dangerous sequence must not appear anywhere in the document
+    // at all - i.e. it never reached the tokenizer as raw markup.
+    assert!(!html.contains("<!--<script>"));
+
+    Ok(())
+}
+
+/// Guards the `.expect()` calls at the `SEARCH_SCRIPT_TEMPLATE` injection
+/// site in `generate_html`, which assume each placeholder occurs exactly
+/// once so `split_once` cleanly separates the template into head/middle/
+/// tail. If a future template edit accidentally duplicated a placeholder,
+/// `split_once` would silently treat only the first occurrence as the
+/// marker and leave the rest as literal dead text; this test turns that
+/// into a loud, immediate test failure instead.
+#[test]
+fn test_search_script_template_placeholders_are_unique() {
+    assert_eq!(
+        crate::generate::html::SEARCH_SCRIPT_TEMPLATE
+            .matches("__SEARCH_INDEX__")
+            .count(),
+        1
+    );
+    assert_eq!(
+        crate::generate::html::SEARCH_SCRIPT_TEMPLATE
+            .matches("__CATEGORY_INDEX__")
+            .count(),
+        1
+    );
+}
