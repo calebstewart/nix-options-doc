@@ -1,27 +1,146 @@
 name: Build Release Binaries
 
+# Releases are cut from `main`, which run-tests.yml has already validated, so
+# this workflow does not re-run the test suite. What it does guarantee is that
+# the binaries match the tested dependency resolution: every build passes
+# --locked, and every target is built natively on a runner of its own
+# architecture (the tree pulls in aws-lc-sys, which is C + assembly and painful
+# to cross-compile).
 on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing release tag to build and upload assets for'
+        required: true
+        type: string
+
+# Never cancel a run that may already have uploaded assets.
+concurrency:
+  group: build-release-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_NET_RETRY: 10
+  RUSTUP_MAX_RETRIES: 10
+  RUST_BACKTRACE: short
 
 jobs:
   release:
     name: Release ${{ matrix.target }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
     strategy:
       fail-fast: false
       matrix:
         include:
         - target: x86_64-unknown-linux-musl
-          archive: tar.gz tar.xz
+          os: ubuntu-24.04
+        - target: aarch64-unknown-linux-musl
+          os: ubuntu-24.04-arm
+        - target: x86_64-apple-darwin
+          os: macos-15-intel
+        - target: aarch64-apple-darwin
+          os: macos-15
+        - target: x86_64-pc-windows-msvc
+          os: windows-2022
     steps:
-    - uses: actions/checkout@v4
-    - name: Build and release
-      uses: rust-build/rust-build.action@v1.4.5
+    - name: Checkout repository
+      uses: actions/checkout@v4
       with:
-        TOOLCHAIN_VERSION: stable
+        ref: ${{ github.event.release.tag_name || inputs.tag }}
+        persist-credentials: false
+
+    # musl-gcc is the linker *and* the C compiler for the aws-lc-sys build
+    # script; cmake/clang are what that build script drives. They are already
+    # present on the x64 image but not guaranteed on the arm64 one, and
+    # apt-get is a no-op when they are.
+    - name: Install musl build dependencies
+      if: endsWith(matrix.target, '-unknown-linux-musl')
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y musl-tools cmake clang libclang-dev
+        {
+          echo "CC=musl-gcc"
+          echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc"
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc"
+        } >> "$GITHUB_ENV"
+
+    # Same toolchain channel run-tests.yml tests with, so release binaries are
+    # built by the compiler the test matrix actually exercised. The 1.88.0 pin
+    # in the msrv job is a compile-floor check, not the release toolchain.
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: stable
+        targets: ${{ matrix.target }}
+
+    # No build cache here on purpose: release artifacts are built from scratch.
+    - name: Build
+      shell: bash
       env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        RUSTTARGET: ${{ matrix.target }}
-        ARCHIVE_TYPES: ${{ matrix.archive }}
+        TARGET: ${{ matrix.target }}
+      run: cargo build --release --locked --target "$TARGET"
+
+    - name: Smoke-test the binary
+      shell: bash
+      env:
+        TARGET: ${{ matrix.target }}
+      run: |
+        set -euo pipefail
+        BIN="target/$TARGET/release/nix-options-doc"
+        if [ "$RUNNER_OS" = "Windows" ]; then
+          BIN="$BIN.exe"
+        fi
+        "$BIN" --version
+
+    - name: Package
+      id: package
+      shell: bash
+      env:
+        TARGET: ${{ matrix.target }}
+      run: |
+        set -euo pipefail
+        NAME="nix-options-doc-${TAG}-${TARGET}"
+        mkdir -p "dist/$NAME"
+        if [ "$RUNNER_OS" = "Windows" ]; then
+          cp "target/$TARGET/release/nix-options-doc.exe" "dist/$NAME/"
+        else
+          cp "target/$TARGET/release/nix-options-doc" "dist/$NAME/"
+        fi
+        cp README.md LICENSE "dist/$NAME/"
+        cd dist
+        if [ "$RUNNER_OS" = "Windows" ]; then
+          7z a "$NAME.zip" "$NAME" > /dev/null
+          ASSET="$NAME.zip"
+        else
+          tar -czf "$NAME.tar.gz" "$NAME"
+          ASSET="$NAME.tar.gz"
+        fi
+        if command -v sha256sum > /dev/null; then
+          sha256sum "$ASSET" > "$ASSET.sha256"
+        else
+          shasum -a 256 "$ASSET" > "$ASSET.sha256"
+        fi
+        echo "asset=$ASSET" >> "$GITHUB_OUTPUT"
+
+    # --clobber makes re-running the workflow for the same tag idempotent.
+    - name: Upload release assets
+      shell: bash
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        ASSET: ${{ steps.package.outputs.asset }}
+      run: |
+        set -euo pipefail
+        cd dist
+        gh release upload "$TAG" "$ASSET" "$ASSET.sha256" \
+          --clobber --repo "$GITHUB_REPOSITORY"
