@@ -408,6 +408,10 @@ pub fn prepare_path(cli: &Cli) -> Result<(PathBuf, Option<TempDir>), NixDocError
 
 /// Recursively collects NixOS module options from all .nix files in the specified directory.
 ///
+/// Hidden directories (name starting with `.`, e.g. `.git`, `.direnv`, `.cache`) below the
+/// root are pruned during traversal and never descended into; the root itself is exempt from
+/// this check, so a hidden directory passed directly as `dir` is still processed.
+///
 /// # Arguments
 /// - `dir`: The base directory to search for Nix files.
 /// - `exclude_dirs`: A list of directory paths to exclude from processing.
@@ -463,7 +467,18 @@ pub fn collect_options(
     let mut nix_files = Vec::new();
 
     // Walk the directory, filtering out excluded paths
-    for result in WalkDir::new(dir).follow_links(follow_symlinks).into_iter() {
+    // `filter_entry` rather than filtering in the loop body: when the
+    // predicate rejects a directory, `WalkDir` skips the entire subtree
+    // instead of descending into it. That is the whole point here - a
+    // per-entry check only sees the entry's own name, so a plain
+    // `secret.nix` inside `.direnv`/`.git` looks perfectly ordinary and
+    // gets documented (see nix-options-doc#8), and `.git` is walked in
+    // full on every run.
+    for result in WalkDir::new(dir)
+        .follow_links(follow_symlinks)
+        .into_iter()
+        .filter_entry(utils::should_traverse_entry)
+    {
         // Handle any errors during directory traversal
         let entry = match result {
             Ok(entry) => entry,
