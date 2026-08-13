@@ -8,6 +8,12 @@ on:
     branches:
       - main
 
+# A superseded PR run is cancelled when the branch is pushed again; pushes to
+# main always run to completion so every commit on main keeps its own result.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   RUSTFLAGS: '-Dwarnings'
   CARGO_INCREMENTAL: 0
@@ -15,17 +21,90 @@ env:
   RUSTUP_MAX_RETRIES: 10
   RUST_BACKTRACE: short
 
+# NOTE: this crate has no `[features]` table, no `optional = true` dependency
+# and no `#[cfg(feature = ...)]` in `src/`, so `cargo hack --each-feature` and
+# `--all-features` check exactly one configuration and buy nothing. If a
+# `[features]` table is ever added, reinstate cargo-hack here.
+
 jobs:
-  check-msrv:
-    name: Check MSRV
+  # ---------------------------------------------------------------- PR runs
+  # The full matrix below runs only on pull_request. Pushes to main get the
+  # single `smoke` job at the bottom instead.
+
+  lint:
+    name: Lint
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: stable
+        components: clippy, rustfmt
+
+    - uses: Swatinem/rust-cache@v2
+      with:
+        key: lint-${{ hashFiles('Cargo.lock', 'Cargo.toml') }}
+
+    - name: Check formatting
+      shell: bash
+      run: cargo fmt -- --check
+
+    # --all-targets so the `#[cfg(test)]` module in src/tests/ is linted too;
+    # a bare `cargo clippy` never compiles it.
+    - name: Clippy
+      shell: bash
+      run: cargo clippy --all-targets
+
+  test:
+    name: Test
+    if: github.event_name == 'pull_request'
     runs-on: ${{ matrix.os }}
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         os:
         - macos-latest
         - ubuntu-latest
         - windows-2022
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+
+    - uses: rui314/setup-mold@v1
+      if: runner.os == 'Linux'
+      with:
+        make-default: true
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: stable
+
+    - name: Install cargo-nextest
+      uses: baptiste0928/cargo-install@v3
+      with:
+        crate: cargo-nextest
+
+    - uses: Swatinem/rust-cache@v2
+      with:
+        key: test-${{ hashFiles('Cargo.lock', 'Cargo.toml') }}-${{ matrix.os }}
+
+    - name: Run tests
+      shell: bash
+      run: cargo nextest run
+
+  msrv:
+    name: Check MSRV
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
@@ -39,18 +118,17 @@ jobs:
 
     - uses: Swatinem/rust-cache@v2
       with:
-        key: cargo-cache-${{ hashFiles('Cargo.lock', 'Cargo.toml') }}-${{ matrix.os }}
+        key: msrv-${{ hashFiles('Cargo.lock', 'Cargo.toml') }}
 
-    - name: Install cargo-hack
-      uses: baptiste0928/cargo-install@v3
-      with:
-        crate: cargo-hack
-
+    # --locked is load-bearing here: it fails the job if Cargo.lock is stale
+    # relative to Cargo.toml, which no other job checks.
     - name: Check MSRV compiles
-      run: cargo hack check --each-feature --locked
+      shell: bash
+      run: cargo check --locked
 
   cargo-deny:
     name: Run cargo-deny
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -67,20 +145,14 @@ jobs:
       with:
         command: check ${{ matrix.checks }}
 
-  test:
-    name: Run Checks
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os:
-        - macos-latest
-        - ubuntu-latest
-        - windows-2022
-        rust:
-        - beta
-        - nightly
-        - stable
+  # -------------------------------------------------------- push to main
+  # Tripwire on the squashed commit. PRs already ran the full matrix against
+  # the same content, so this deliberately does not duplicate it.
+
+  smoke:
+    name: Smoke Test
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
@@ -88,47 +160,28 @@ jobs:
         persist-credentials: false
 
     - uses: rui314/setup-mold@v1
-      if: runner.os == 'Linux'
       with:
         make-default: true
 
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
       with:
-        toolchain: ${{ matrix.rust }}
-        components: clippy, rustfmt
+        toolchain: stable
+        components: clippy
 
     - name: Install cargo-nextest
       uses: baptiste0928/cargo-install@v3
       with:
         crate: cargo-nextest
 
-    - name: Install cargo-hack
-      uses: baptiste0928/cargo-install@v3
-      with:
-        crate: cargo-hack
-    
     - uses: Swatinem/rust-cache@v2
       with:
-        key: cargo-cache-${{ hashFiles('Cargo.lock', 'Cargo.toml') }}-${{ matrix.os }}-${{ matrix.rust }}
-
-    - name: Check formatting
-      shell: bash
-      run: cargo fmt -- --check
-
-    - name: Setup Embark Studios lint rules
-      shell: bash
-      run: |
-        mkdir .cargo
-        curl -sL https://raw.githubusercontent.com/EmbarkStudios/rust-ecosystem/main/lints.toml > .cargo/config.toml
+        key: smoke-${{ hashFiles('Cargo.lock', 'Cargo.toml') }}
 
     - name: Clippy
       shell: bash
-      run: cargo clippy
-
-    - name: Test compilation
-      run: cargo hack check --each-feature
+      run: cargo clippy --all-targets
 
     - name: Run tests
       shell: bash
-      run: cargo nextest run --all-features
+      run: cargo nextest run

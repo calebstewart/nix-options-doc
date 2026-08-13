@@ -30,9 +30,9 @@ The rest of this section lists the commands themselves, minus that prefix:
 
 ```bash
 cargo build                                    # cargo build --release for the LTO profile
-cargo test                                     # CI uses: cargo nextest run --all-features
+cargo nextest run                              # what CI runs; the dev shell provides it
 cargo fmt -- --check
-cargo clippy                                   # CI runs with RUSTFLAGS=-Dwarnings
+cargo clippy --all-targets                     # CI runs this with RUSTFLAGS=-Dwarnings
 
 cargo run -- --path ./some/modules --format html --out /tmp/out.html
 RUST_LOG=debug cargo run -- --path ./some/modules   # parser skip reasons land here
@@ -41,8 +41,10 @@ RUST_LOG=debug cargo run -- --path ./some/modules   # parser skip reasons land h
 `nix build` builds the package with the *same* toolchain as the dev shell — `flake.nix`
 shares one `rustToolchain` between both on purpose so they can't drift.
 
-MSRV is **1.88** (`Cargo.toml:6`); CI pins `1.88.0` across macOS/Ubuntu/Windows. CI also runs
-`cargo hack check --each-feature --locked` and `cargo deny check` — see
+MSRV is **1.88** (`Cargo.toml:6`); the `msrv` CI job pins `1.88.0` on Ubuntu and runs
+`cargo check --locked` — that `--locked` is the only place `Cargo.lock` staleness is
+caught. `cargo nextest run` covers macOS/Ubuntu/Windows on stable; `fmt`/`clippy` run once
+on Ubuntu/stable. CI also runs `cargo deny check` — see
 `.github/workflows/run-tests.yml` and `deny.toml`. Note `deny.toml` bans `git2`/`openssl`/
 `libssh2-sys`, which is why the `gix` dependency uses the rustls HTTP transport.
 
@@ -140,7 +142,7 @@ Parallelism is rayon over *files only*; everything downstream is single-threaded
   both or neither.
 - **Regexes** are compiled once into `static … LazyLock<Regex>` (`utils.rs:18`, `:65`,
   `:109`, `:155`).
-- **No cargo features exist** — no `[features]` table, no `#[cfg(feature = …)]` anywhere.
+- **No cargo features exist** — no `[features]` table, no `#[cfg(feature = …)]` anywhere. That's why CI dropped `cargo-hack`; if a `[features]` table is ever added, reinstate `cargo hack check --each-feature` in `run-tests.yml` (there's a comment there saying so).
 - **Doc style.** Public functions carry rustdoc with `# Arguments` / `# Returns`, and
   non-obvious decisions get long inline comments explaining *why*. Match that.
 
