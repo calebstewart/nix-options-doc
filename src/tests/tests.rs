@@ -1722,9 +1722,11 @@ fn test_strip_prefix_matches_only_at_start(
 }
 
 /// A leading match must be stripped exactly once, not repeatedly - and a
-/// name that equals the pattern minus its trailing dot must be left
-/// alone, since that dot is what makes it a prefix rather than the whole
-/// name (see nix-options-doc#2).
+/// genuine leading match must still be stripped even when what's left
+/// over is short (e.g. `options.services` under the default pattern
+/// `options.` strips down to `services`), guarding against an
+/// over-correction that leaves such names untouched (see
+/// nix-options-doc#2).
 #[test]
 fn test_strip_prefix_strips_only_one_leading_occurrence(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
