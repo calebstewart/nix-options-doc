@@ -68,11 +68,11 @@ Per-file drill-down inside `collect_options`:
 ```
 utils::process_nix_file            utils.rs:279
   ├─ nix_call::collect_aliases / collect_let_bindings
-  ├─ parser::visit_node            parser.rs:33    walks the tree, builds the dotted prefix,
-  │    └─ parser::parse_attrset    parser.rs:278   folds mkIf conditions into scope
+  ├─ parser::visit_node            parser.rs:37    walks the tree, builds the dotted prefix,
+  │    └─ parser::parse_attrset    parser.rs:295   folds mkIf conditions into scope
   │                                                ^ the big dispatch on node kind — most
   │                                                  parser work goes here
-  └─ parser::find_deprecations     parser.rs:677   mkRenamedOptionModule / mkRemovedOptionModule
+  └─ parser::find_deprecations     parser.rs:724   mkRenamedOptionModule / mkRemovedOptionModule
 ```
 
 Parallelism is rayon over *files only*; everything downstream is single-threaded.
@@ -83,7 +83,7 @@ Parallelism is rayon over *files only*; everything downstream is single-threaded
 |---|---|
 | `src/main.rs` | Thin driver: init logging, parse CLI, run the four stages, write to stdout or `--out`. |
 | `src/lib.rs` | Crate root. CLI structs, `OptionDoc`/`Declaration`, and the four pipeline functions. |
-| `src/parser.rs` | rnix tree traversal. Recognizes `mkOption` (`:391`), `mkEnableOption`, `mkPackageOption`, `mkMerge`, `mkIf`, `let…in`, `with`, and `<expr> // { … }` overrides. Handles inline submodule recursion and `freeformType`. |
+| `src/parser.rs` | rnix tree traversal. Recognizes `mkOption` (`:412`), `mkEnableOption`, `mkPackageOption`, `mkMerge`, `mkIf`, `let…in`, `with`, and `<expr> // { … }` overrides. Handles inline submodule recursion (bounded by `MAX_SUBMODULE_DEPTH`, `types.rs:21`, to guard against cyclic submodule types) and `freeformType`. |
 | `src/types.rs` | Formats Nix type expressions into nixpkgs-style prose (`nullOr` → "null or …", `listOf` → "list of …"). Falls back to raw dedented source rather than guessing. |
 | `src/nix_call.rs` | Low-level AST helpers: unwind curried `NODE_APPLY` chains into `(fn_name, args)`, attrset key lookup, `let`-binding and alias collection. |
 | `src/utils.rs` | Per-file driver, description cleanup (admonitions, dedent, `literalExpression` unwrapping), `${var}` replacement, walkdir filtering, anchor slugs, `KEY=VALUE` arg parser. |
@@ -124,8 +124,8 @@ Parallelism is rayon over *files only*; everything downstream is single-threaded
 
 ## Non-obvious conventions
 
-- **Tests are `include!`d, not a normal test target.** `src/tests/tests.rs` (~1,350 lines,
-  ~30 tests) is textually included into a `#[cfg(test)] mod tests` at `lib.rs:20-23` so it can
+- **Tests are `include!`d, not a normal test target.** `src/tests/tests.rs` (~1,600 lines,
+  ~34 tests) is textually included into a `#[cfg(test)] mod tests` at `lib.rs:20-23` so it can
   reach private items via `use super::*`.
 - **No fixture files.** Every test builds a `tempfile::TempDir`, writes inline Nix with
   `create_test_file` (`tests.rs:17`), calls `collect_options`, and asserts on the resulting
@@ -133,7 +133,7 @@ Parallelism is rayon over *files only*; everything downstream is single-threaded
 - **Two error types.** `parser.rs` returns `Box<dyn Error + Send + Sync>`; `lib.rs` and
   `generate/` use `NixDocError`. The bridge is the `From` impl at `error.rs:72`.
 - **Graceful degradation is deliberate.** Unreadable or unparseable files log an error and
-  yield zero options (`utils.rs:314`, `:329`); an invalid `--search` regex logs and skips
+  yield zero options (`utils.rs:315`, `:330`); an invalid `--search` regex logs and skips
   filtering. Don't "fix" these into hard failures.
 - **`nix_files.sort()` (`lib.rs:472`) is load-bearing.** It exists for determinism — sort
   order decides which declaration becomes the primary one after merging.
@@ -148,12 +148,12 @@ Parallelism is rayon over *files only*; everything downstream is single-threaded
 
 ## Recipes
 
-- **An option isn't being detected** → run with `RUST_LOG=debug`. `parser.rs:655` logs
-  unhandled node kinds and `parser.rs:570` logs unrecognized option functions.
+- **An option isn't being detected** → run with `RUST_LOG=debug`. `parser.rs:702` logs
+  unhandled node kinds and `parser.rs:614` logs unrecognized option functions.
 - **Support a new option builtin** (`mkFooOption`) → add a match arm in `parse_attrset`
-  (`parser.rs:278`), near the `mkOption` arm at `:391`. Add a test.
-- **Support a new type combinator** → `types::format_ident` (`types.rs:107`) for bare
-  identifiers, `types::format_call` (`types.rs:39`) for applied ones.
+  (`parser.rs:295`), near the `mkOption` arm at `:412`. Add a test.
+- **Support a new type combinator** → `types::format_ident` (`types.rs:113`) for bare
+  identifiers, `types::format_call` (`types.rs:45`) for applied ones.
 - **Add an output format** → new file under `src/generate/`, re-export from
   `generate/mod.rs:12`, add an `OutputFormat` variant (`lib.rs:26`) and a matching
   `generate_doc` arm (`lib.rs:568`).
