@@ -1659,3 +1659,168 @@ fn test_prepare_path_local_path_ignores_branch(
 
     Ok(())
 }
+
+/// `--strip-prefix` used `String::replace`, which removes the pattern
+/// *everywhere* in the name, not just a leading match. A name that merely
+/// contains the pattern mid-string (e.g. a nested submodule path that
+/// happens to repeat `options.services.`) must be left with only its
+/// leading occurrence removed, and a name that never starts with the
+/// pattern must be left untouched entirely (see nix-options-doc#2).
+#[test]
+fn test_strip_prefix_matches_only_at_start(
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let temp_dir = TempDir::new()?;
+    create_test_file(
+        temp_dir.path(),
+        "strip.nix",
+        r#"
+{ lib, ... }:
+{
+  options.services.foo.options.services.bar = lib.mkOption {
+    type = lib.types.str;
+    default = "x";
+    description = "Interior occurrence, also a leading match.";
+  };
+
+  options.programs.options.services.baz = lib.mkOption {
+    type = lib.types.bool;
+    default = false;
+    description = "Interior occurrence only, no leading match.";
+  };
+
+  options.services.plain = lib.mkOption {
+    type = lib.types.bool;
+    default = false;
+    description = "Control.";
+  };
+}
+"#,
+    )?;
+
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
+    let cli = Cli::parse_from(["program", "--strip-prefix", "options.services"]);
+    let filtered = filter_options(&options, &cli);
+
+    let names: Vec<&str> = filtered.iter().map(|o| o.name.as_str()).collect();
+    assert!(
+        names.contains(&"foo.options.services.bar"),
+        "expected the leading occurrence to be stripped but the interior one preserved, got: {names:?}"
+    );
+    assert!(
+        names.contains(&"options.programs.options.services.baz"),
+        "expected a name with no leading match to be left untouched, got: {names:?}"
+    );
+    assert!(names.contains(&"plain"), "control option missing, got: {names:?}");
+
+    assert!(!names.contains(&"foo.bar"), "interior occurrence was wrongly stripped too");
+    assert!(
+        !names.contains(&"options.programs.baz"),
+        "non-leading occurrence was wrongly stripped"
+    );
+
+    Ok(())
+}
+
+/// A leading match must be stripped exactly once, not repeatedly - and a
+/// genuine leading match must still be stripped even when what's left
+/// over is short (e.g. `options.services` under the default pattern
+/// `options.` strips down to `services`), guarding against an
+/// over-correction that leaves such names untouched (see
+/// nix-options-doc#2).
+#[test]
+fn test_strip_prefix_strips_only_one_leading_occurrence(
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let temp_dir = TempDir::new()?;
+    create_test_file(
+        temp_dir.path(),
+        "dup.nix",
+        r#"
+{ lib, ... }:
+{
+  options.options.foo = lib.mkOption {
+    type = lib.types.str;
+    default = "y";
+    description = "Repeated prefix.";
+  };
+
+  options.services = lib.mkOption {
+    type = lib.types.bool;
+    default = false;
+    description = "Name equals the pattern minus its trailing dot.";
+  };
+}
+"#,
+    )?;
+
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
+    // Default pattern is "options.".
+    let cli = Cli::parse_from(["program", "--strip-prefix"]);
+    let filtered = filter_options(&options, &cli);
+
+    let names: Vec<&str> = filtered.iter().map(|o| o.name.as_str()).collect();
+    assert!(
+        names.contains(&"options.foo"),
+        "expected only the leading `options.` to be stripped once, got: {names:?}"
+    );
+    assert!(
+        names.contains(&"services"),
+        "regression guard: a genuine leading match must still be stripped, got: {names:?}"
+    );
+
+    Ok(())
+}
+
+/// The `renamed_to` anchor resolution loop applies the same
+/// `--strip-prefix` stripping as the option-name loop, so the two must
+/// stay in lockstep: the shim's rendered link anchor must match the
+/// target option's actual post-filter name, derived the same way the
+/// target's own name was (see nix-options-doc#2).
+#[test]
+fn test_renamed_option_anchor_uses_leading_strip_only(
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let temp_dir = TempDir::new()?;
+    create_test_file(
+        temp_dir.path(),
+        "ren.nix",
+        r#"
+{ lib, ... }:
+{
+  imports = [
+    (lib.mkRenamedOptionModule [ "services" "old" ] [ "services" "foo" "options" "services" "new" ])
+  ];
+
+  options.services.foo.options.services.new = lib.mkOption {
+    type = lib.types.str;
+    default = "z";
+    description = "The rename target.";
+  };
+}
+"#,
+    )?;
+
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
+    let cli = Cli::parse_from(["program", "--strip-prefix", "options.services"]);
+    let filtered = filter_options(&options, &cli);
+
+    let target = filtered
+        .iter()
+        .find(|o| o.name == "foo.options.services.new")
+        .expect("rename target should keep its interior `options.services.` occurrence");
+
+    let expected = utils::anchor_slug(&target.name);
+
+    let shim = filtered
+        .iter()
+        .find(|o| o.name == "old")
+        .expect("renamed option shim should be found, with the leading prefix stripped");
+    assert!(
+        shim.description
+            .as_deref()
+            .unwrap()
+            .contains(&format!("[`services.foo.options.services.new`](#{expected})")),
+        "shim description did not link to the target's actual anchor `{expected}`: {:?}",
+        shim.description
+    );
+
+    Ok(())
+}
