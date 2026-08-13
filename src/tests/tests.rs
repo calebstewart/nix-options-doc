@@ -1594,3 +1594,68 @@ in
 
     Ok(())
 }
+
+/// Tests that an invalid `--branch` ref name produces a `NixDocError`
+/// rather than panicking.
+#[test]
+fn test_prepare_path_invalid_branch_name() {
+    use clap::Parser;
+
+    // `with_ref_name` validates locally, before any network traffic, so
+    // this needs no remote - the URL only has to be syntactically valid
+    // and not exist on disk.
+    for branch in [
+        "my branch", // InvalidByte
+        "foo..bar",  // RepeatedDot
+        "",          // Empty
+        "trailing/", // EndsWithSlash
+        "has*star",  // Asterisk
+        ".leading",  // StartsWithDot
+        "ends.lock", // LockFileSuffix
+        "re@{flog",  // ReflogPortion
+    ] {
+        let cli = Cli::parse_from([
+            "program",
+            "--path",
+            "https://example.invalid/owner/repo.git",
+            "--branch",
+            branch,
+        ]);
+
+        let err = prepare_path(&cli)
+            .err()
+            .unwrap_or_else(|| panic!("expected an error for branch {branch:?}"));
+
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Invalid branch or tag name"),
+            "branch {branch:?} produced the wrong error: {msg}"
+        );
+        assert!(
+            msg.contains(branch),
+            "branch {branch:?} is not named in the error: {msg}"
+        );
+    }
+}
+
+/// Tests that a local path short-circuits before any git handling.
+#[test]
+fn test_prepare_path_local_path_ignores_branch(
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use clap::Parser;
+
+    let temp_dir = TempDir::new()?;
+    let cli = Cli::parse_from([
+        "program",
+        "--path",
+        &temp_dir.path().to_string_lossy(),
+        "--branch",
+        "not a valid ref",
+    ]);
+
+    let (path, tmp) = prepare_path(&cli)?;
+    assert_eq!(path, temp_dir.path());
+    assert!(tmp.is_none());
+
+    Ok(())
+}
