@@ -284,7 +284,13 @@ pub fn filter_options(options: &[OptionDoc], cli: &Cli) -> Vec<OptionDoc> {
         log::debug!("Stripping prefix `{}` from the generated document", prefix);
 
         for opt in &mut filtered {
-            opt.name = opt.name.replace(prefix, "");
+            // Only a *leading* match is a prefix. `str::replace` would also
+            // strip mid-name occurrences (a nested `options.services.` inside
+            // a submodule path, say), mangling names that merely contain the
+            // pattern - see nix-options-doc#2.
+            if let Some(rest) = opt.name.strip_prefix(prefix) {
+                opt.name = rest.to_string();
+            }
         }
     }
 
@@ -302,7 +308,9 @@ pub fn filter_options(options: &[OptionDoc], cli: &Cli) -> Vec<OptionDoc> {
         };
         let mut target_name = format!("options.{target}");
         if let Some(prefix) = &strip_prefix_pattern {
-            target_name = target_name.replace(prefix, "");
+            if let Some(rest) = target_name.strip_prefix(prefix) {
+                target_name = rest.to_string();
+            }
         }
         let anchor = utils::anchor_slug(&target_name);
         if let Some(description) = &mut opt.description {
