@@ -2728,3 +2728,65 @@ fn test_search_script_template_placeholders_are_unique() {
          __CATEGORY_INDEX__ in the template"
     );
 }
+
+/// Regression test for #9: `main` used to `return Ok(())` before calling
+/// `generate_doc` at all when no options were found, so `--out` was never
+/// written. This pins the other half of the fix - `generate_doc` itself
+/// must produce a well-formed, non-empty Markdown document for an empty
+/// slice, so that falling through to it in `main` is actually safe.
+#[test]
+fn test_generate_doc_empty_options_markdown() -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+{
+    let output = generate_doc(&[], OutputFormat::Markdown, false)?;
+    assert!(output.contains("# NixOS Module Options"));
+    assert!(output.contains("*Generated with [nix-options-doc]"));
+    Ok(())
+}
+
+/// Regression test for #9: pins the public JSON schema for the empty case.
+/// A consumer of `--format json` must get a valid empty array, never prose
+/// or an error, when zero options are found.
+#[test]
+fn test_generate_doc_empty_options_json() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let output = generate_doc(&[], OutputFormat::Json, false)?;
+    assert_eq!(output.trim(), "[]");
+    let parsed: Vec<serde_json::Value> = serde_json::from_str(&output)?;
+    assert!(parsed.is_empty());
+    Ok(())
+}
+
+/// Regression test for #9: pins "header row only, no filler row" for
+/// `--format csv` over zero options.
+#[test]
+fn test_generate_doc_empty_options_csv() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let output = generate_doc(&[], OutputFormat::Csv, false)?;
+    let mut lines = output.lines();
+    assert_eq!(
+        lines.next(),
+        Some("Option,Type,Default,Example,Description,Declarations")
+    );
+    let non_empty_lines = output.lines().filter(|line| !line.is_empty()).count();
+    assert_eq!(non_empty_lines, 1);
+    Ok(())
+}
+
+/// Regression test for #9: guards the `split_once(...).expect(...)` calls
+/// in the HTML search-index injection site against regressing on the
+/// zero-option path - the splice must still happen (no leftover
+/// placeholders) and both index arrays must serialize as an empty JSON
+/// array rather than being omitted or malformed.
+#[test]
+fn test_generate_doc_empty_options_html() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let html = generate_doc(&[], OutputFormat::Html, false)?;
+    assert!(html.contains("<!DOCTYPE html>"));
+    assert!(html.contains("<strong>0</strong> options"));
+    assert!(!html.contains("__SEARCH_INDEX__"));
+    assert!(!html.contains("__CATEGORY_INDEX__"));
+
+    let search_literal = extract_js_array_literal(&html, "const searchText = ");
+    let category_literal = extract_js_array_literal(&html, "const categoryIndex = ");
+    assert_eq!(search_literal, "[]");
+    assert_eq!(category_literal, "[]");
+
+    Ok(())
+}

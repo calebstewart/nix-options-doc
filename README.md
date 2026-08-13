@@ -168,6 +168,20 @@ $ nix-options-doc --generate-completions fish > ~/.config/fish/completions/nix-o
 
 `elvish` and `powershell` are also supported.
 
+### Logging and Exit Status
+
+`nix-options-doc` logs at the `warn` level by default, so warnings — a path that
+yielded no options, filters that matched nothing, a directory that could not be
+traversed — are printed to stderr without any extra setup. Set `RUST_LOG` to
+override (`RUST_LOG=debug` for parser detail, `RUST_LOG=error` to silence
+warnings).
+
+The output document is always produced, even when zero options are found: `--out`
+is written (and any file already there is overwritten) and stdout gets the empty
+document. The exit status is `0` in that case — an option-less tree is not an
+error. Only real failures (unreadable path, failed clone, unwritable output) exit
+non-zero.
+
 ## Output Examples
 
 ### Markdown Format
