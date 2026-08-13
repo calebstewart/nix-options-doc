@@ -1,12 +1,41 @@
 name: Run Tests
 
+# Path filters keep the whole workflow off changes that cannot affect the
+# build. `paths-ignore` (a denylist) rather than `paths` (an allowlist) is
+# deliberate: a denylist fails safe — a file type nobody anticipated still
+# triggers CI and the worst case is one wasted run, whereas an allowlist fails
+# open — add a source directory or build file that is not in the list and CI
+# silently stops covering it. Nothing listed here is read by any build step;
+# `Cargo.toml`/`Cargo.lock`, `deny.toml`, `flake.nix`/`flake.lock` and
+# everything under `.github/` are deliberately absent from the list.
+#
+# The two blocks must stay identical: if they drift, a docs-only PR skips the
+# matrix while its squashed merge commit still runs the smoke job, or vice
+# versa. YAML anchors cannot be used to share the list — GitHub Actions does
+# not support anchors/aliases in workflow files — so it is duplicated.
+#
+# WARNING: a path-filtered workflow interacts badly with *required* status
+# checks. GitHub reports a path-skipped workflow as "not run", never as
+# "passed", so a docs-only PR would wait forever for a required check that
+# never arrives. The repository ruleset "Default Branch" currently requires a
+# pull request (0 approvals, squash-only) and no status checks, so this is
+# safe as written. If required status checks are ever added, require an
+# always-runs aggregator job instead of the jobs below.
 on:
   push:
     branches:
       - main
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE'
+      - '.gitignore'
   pull_request:
     branches:
       - main
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE'
+      - '.gitignore'
 
 # A superseded PR run is cancelled when the branch is pushed again; pushes to
 # main always run to completion so every commit on main keeps its own result.

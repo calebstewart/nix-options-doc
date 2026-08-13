@@ -51,6 +51,12 @@ caught. `cargo nextest run` covers macOS/Ubuntu/Windows on stable; `fmt`/`clippy
 on Ubuntu/stable. CI also runs `cargo deny check` — see
 `.github/workflows/run-tests.yml` and `deny.toml`. Note `deny.toml` bans `git2`/`openssl`/
 `libssh2-sys`, which is why the `gix` dependency uses the rustls HTTP transport.
+The workflow also carries a `paths-ignore` denylist (`**.md`, `LICENSE`, `.gitignore`),
+so a documentation-only change shows *no* checks at all rather than green ones — that is
+expected, not a broken run. It is a denylist on purpose (an unanticipated new file type
+still triggers CI); if a required status check is ever added to this repo, a path-skipped
+docs PR will block forever unless the required check is an always-runs aggregator job.
+See the comment above `on:` in `.github/workflows/run-tests.yml`.
 
 Pure Cargo project — no justfile, Makefile, or package.json.
 
