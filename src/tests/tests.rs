@@ -3110,3 +3110,119 @@ fn test_readme_does_not_link_the_upstream_fork_source() {
         "README should reference this fork's repository"
     );
 }
+
+/// The `--strip-prefix` help text is user-facing documentation of
+/// `filter_options`' prefix normalization, and it drifted from the code:
+/// it claimed the value "must start with 'options.'" (no such validation
+/// exists) and that the no-value default was `option.` (a typo for
+/// `options.`) - see nix-options-doc#13. Guards the wording against
+/// regressing to either claim, and pins the no-value default to the
+/// value the help text promises.
+#[test]
+fn test_strip_prefix_help_text_matches_behavior(
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use clap::CommandFactory;
+
+    let cmd = Cli::command();
+    let arg = cmd
+        .get_arguments()
+        .find(|a| a.get_id() == "strip_prefix")
+        .expect("--strip-prefix argument should exist");
+    let help = arg
+        .get_long_help()
+        .or_else(|| arg.get_help())
+        .expect("--strip-prefix should have help text")
+        .to_string();
+
+    // `options.` legitimately appears; a bare `option.` never should.
+    assert!(
+        !help.replace("options.", "").contains("option."),
+        "help text still contains the `option.` typo: {help}"
+    );
+    assert!(
+        !help.to_lowercase().contains("must start with"),
+        "help text still claims a constraint that is not enforced: {help}"
+    );
+
+    let cli = Cli::parse_from(["program", "--strip-prefix"]);
+    assert_eq!(
+        cli.filter.strip_prefix.as_deref(),
+        Some("options."),
+        "the no-value default must stay the `options.` the help text documents"
+    );
+
+    Ok(())
+}
+
+/// A bare prefix (one that does not start with `options.`) is valid and
+/// is normalized to `options.<PREFIX>.`; an explicit prefix without a
+/// trailing dot gets one appended; an empty value means `options.`.
+/// Nothing rejects a bare prefix, so a "fix" for nix-options-doc#13 that
+/// enforced the help text's old claim instead of correcting it would be
+/// a breaking behavior change - this pins the behavior the corrected
+/// wording describes.
+#[test]
+fn test_strip_prefix_accepts_bare_prefix() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let temp_dir = TempDir::new()?;
+    create_test_file(
+        temp_dir.path(),
+        "bare.nix",
+        r#"
+{ lib, ... }:
+{
+  options.services.foo.enable = lib.mkOption {
+    type = lib.types.bool;
+    default = false;
+    description = "Enable foo.";
+  };
+
+  options.services.bar.enable = lib.mkOption {
+    type = lib.types.bool;
+    default = false;
+    description = "Enable bar.";
+  };
+}
+"#,
+    )?;
+
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
+
+    // Bare prefix: normalized to `options.services.foo.`.
+    let cli = Cli::parse_from(["program", "--strip-prefix", "services.foo"]);
+    let names: Vec<String> = filter_options(&options, &cli)
+        .into_iter()
+        .map(|o| o.name)
+        .collect();
+    assert!(
+        names.iter().any(|n| n == "enable"),
+        "a bare prefix should be treated as `options.<PREFIX>`, got: {names:?}"
+    );
+    assert!(
+        names.iter().any(|n| n == "options.services.bar.enable"),
+        "non-matching names must be left untouched, got: {names:?}"
+    );
+
+    // Explicit prefix, no trailing dot: same result.
+    let cli = Cli::parse_from(["program", "--strip-prefix", "options.services.foo"]);
+    let explicit: Vec<String> = filter_options(&options, &cli)
+        .into_iter()
+        .map(|o| o.name)
+        .collect();
+    assert_eq!(
+        explicit, names,
+        "an explicit `options.`-prefixed value should behave like the bare one"
+    );
+
+    // Empty value: same as passing the flag with no value at all.
+    let cli = Cli::parse_from(["program", "--strip-prefix", ""]);
+    let empty: Vec<String> = filter_options(&options, &cli)
+        .into_iter()
+        .map(|o| o.name)
+        .collect();
+    assert!(
+        empty.iter().any(|n| n == "services.foo.enable"),
+        "an empty value should strip `options.`, got: {empty:?}"
+    );
+
+    Ok(())
+}

@@ -128,9 +128,11 @@ pub struct FilterOptions {
     #[arg(value_name = "KEY=VALUE")]
     pub replace: Vec<(String, String)>,
 
-    /// Remove the specified prefix from generated
-    /// documentation (must start with 'options.'),
-    /// defaults to `option.` if no value is specified.
+    /// Remove the specified prefix from option names in
+    /// the generated documentation. A prefix that does not
+    /// already start with `options.` is treated as
+    /// `options.<PREFIX>`, and a missing trailing dot is
+    /// added. Given without a value, strips `options.`.
     #[arg(long, value_name = "PREFIX")]
     #[arg(num_args = 0..=1, default_missing_value = "options.")]
     pub strip_prefix: Option<String>,

@@ -101,6 +101,9 @@ $ nix-options-doc --has-description
 
 # Strip common prefix from option names
 $ nix-options-doc --strip-prefix options.services
+
+# A bare prefix means the same thing: `options.` is added for you
+$ nix-options-doc --strip-prefix services
 ```
 
 ### Working with Git Repositories
@@ -149,7 +152,7 @@ Options:
       --has-default                Only show options that have a default value
       --has-description            Only show options that have a description
       --replace <KEY=VALUE>        Replace variables in Nix modules (can be used multiple times)
-      --strip-prefix [<PREFIX>]    Remove the specified prefix from output [default: options.]
+      --strip-prefix [<PREFIX>]    Remove a prefix from option names; a bare prefix means options.<PREFIX> [without a value: options.]
   -e, --exclude-dir <EXCLUDE_DIR>  Directories to exclude from processing
       --follow-symlinks            Enable traversing through symbolic links
       --progress                   Show progress bar
