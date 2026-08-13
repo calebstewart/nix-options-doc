@@ -41,6 +41,8 @@
             rustToolchain
             pkgs.rust-analyzer
             pkgs.gcc
+            pkgs.cargo-nextest
+            pkgs.cargo-deny
           ];
 
           RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
