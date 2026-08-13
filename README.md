@@ -36,18 +36,20 @@ But this also means: since nothing is evaluated, values that depend on runtime c
 
 ### Pre-built Binary
 
-Pre-built binaries for ARM and x86 based GNU/Linux systems are available under [releases](https://github.com/Thunderbottom/nix-options-doc/releases).
+Pre-built binaries are attached to every [release](https://github.com/calebstewart/nix-options-doc/releases):
+Linux x86_64 and aarch64 (statically linked against musl), macOS on Intel and Apple
+Silicon, and Windows x86_64. Each archive ships with a matching `.sha256` file.
 
 ### Using Cargo
 
 ```bash
-$ cargo install --git https://github.com/Thunderbottom/nix-options-doc
+$ cargo install --git https://github.com/calebstewart/nix-options-doc
 ```
 
 Or build from source:
 
 ```bash
-$ git clone https://github.com/Thunderbottom/nix-options-doc.git
+$ git clone https://github.com/calebstewart/nix-options-doc.git
 $ cd nix-options-doc
 $ cargo build --release
 ```
@@ -55,7 +57,7 @@ $ cargo build --release
 ### Using Nix
 
 ```bash
-$ nix build github:Thunderbottom/nix-options-doc
+$ nix build github:calebstewart/nix-options-doc
 $ ./result/bin/nix-options-doc --path /etc/nixos --out nixos-options.md
 ```
 
