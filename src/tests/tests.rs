@@ -1347,3 +1347,250 @@ fn test_renamed_option_link_resolution() -> Result<(), Box<dyn std::error::Error
 
     Ok(())
 }
+
+/// A submodule type bound via `let` that refers back to itself (a
+/// tree-shaped config, e.g. nested filters) used to recurse forever
+/// through `types::find_submodule_body` / `parser::parse_attrset` and
+/// crash the whole run with a stack overflow, since nothing tracked
+/// which submodule bodies were already being expanded (see
+/// nix-options-doc#6). This is the issue's own repro: the fix must stop
+/// expanding at the point the recursive type is encountered again,
+/// while still documenting the option that used it.
+#[test]
+fn test_recursive_let_bound_submodule_terminates(
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let temp_dir = TempDir::new()?;
+    let content = r#"
+{ lib, ... }:
+let
+  filterModule = lib.types.submodule {
+    options = {
+      name = lib.mkOption {
+        type = lib.types.str;
+        description = "Filter name";
+      };
+      children = lib.mkOption {
+        type = lib.types.listOf filterModule;
+        default = [ ];
+        description = "Nested child filters";
+      };
+    };
+  };
+in
+{
+  options.services.demo.filters = lib.mkOption {
+    type = lib.types.listOf filterModule;
+    default = [ ];
+    description = "Tree of filters";
+  };
+}
+"#;
+    create_test_file(temp_dir.path(), "recursive.nix", content)?;
+
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
+
+    assert_eq!(options.len(), 3);
+
+    let filters = options
+        .iter()
+        .find(|o| o.name == "options.services.demo.filters")
+        .expect("filters option should be present");
+    assert_eq!(filters.nix_type, "list of filterModule");
+
+    let name = options
+        .iter()
+        .find(|o| o.name == "options.services.demo.filters.<name>.name")
+        .expect("filters.<name>.name should be present");
+    assert_eq!(name.nix_type, "string");
+
+    let children = options
+        .iter()
+        .find(|o| o.name == "options.services.demo.filters.<name>.children")
+        .expect("filters.<name>.children should be present");
+    assert_eq!(children.nix_type, "list of filterModule");
+
+    assert!(!options
+        .iter()
+        .any(|o| o.name.starts_with("options.services.demo.filters.<name>.children.")));
+
+    Ok(())
+}
+
+/// Two `let`-bound submodule types that reference *each other*
+/// (`nodeModule` -> `edgeModule` -> `nodeModule` -> ...) is the same
+/// unbounded-recursion hazard as the single self-referential case above,
+/// just spread across two bindings instead of one. Guarding on the
+/// resolved body's text range (rather than the binding name) is what
+/// catches this (nix-options-doc#6).
+#[test]
+fn test_mutually_recursive_submodule_types_terminate(
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let temp_dir = TempDir::new()?;
+    let content = r#"
+{ lib, ... }:
+let
+  nodeModule = lib.types.submodule {
+    options = {
+      label = lib.mkOption {
+        type = lib.types.str;
+        description = "Node label.";
+      };
+      edge = lib.mkOption {
+        type = lib.types.nullOr edgeModule;
+        default = null;
+        description = "Outgoing edge, if any.";
+      };
+    };
+  };
+  edgeModule = lib.types.submodule {
+    options = {
+      weight = lib.mkOption {
+        type = lib.types.int;
+        default = 1;
+        description = "Edge weight.";
+      };
+      target = lib.mkOption {
+        type = lib.types.nullOr nodeModule;
+        default = null;
+        description = "Target node.";
+      };
+    };
+  };
+in
+{
+  options.services.demo.root = lib.mkOption {
+    type = lib.types.nullOr nodeModule;
+    default = null;
+    description = "Root of the graph.";
+  };
+}
+"#;
+    create_test_file(temp_dir.path(), "mutual.nix", content)?;
+
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
+
+    assert_eq!(options.len(), 5);
+
+    let names = [
+        "options.services.demo.root",
+        "options.services.demo.root.label",
+        "options.services.demo.root.edge",
+        "options.services.demo.root.edge.weight",
+        "options.services.demo.root.edge.target",
+    ];
+    for name in names {
+        assert!(
+            options.iter().any(|o| o.name == name),
+            "expected option {name} to be present"
+        );
+    }
+
+    assert!(!options
+        .iter()
+        .any(|o| o.name.starts_with("options.services.demo.root.edge.target.")));
+
+    Ok(())
+}
+
+/// A cyclic `let` binding chain used purely as a *type alias*
+/// (`let a = b; b = a;`), with no `submodule` anywhere in sight, hits a
+/// separate unguarded recursion path than the submodule-expansion cases
+/// above: `types::find_submodule_body`'s bare-identifier arm jumps
+/// straight to whatever node is bound in `let_bindings`, so a cyclic
+/// alias chain loops forever purely inside `types.rs`, before
+/// `parser.rs` is ever involved (nix-options-doc#6). The option itself
+/// must still be documented, using the raw identifier as its type
+/// (`format_ident`'s fallback), with no submodule expansion attempted.
+#[test]
+fn test_cyclic_let_binding_type_reference() -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+{
+    let temp_dir = TempDir::new()?;
+    let content = r#"
+{ lib, ... }:
+let
+  a = b;
+  b = a;
+in
+{
+  options.services.demo.thing = lib.mkOption {
+    type = lib.types.listOf a;
+    default = [ ];
+    description = "Uses a cyclic let-bound type alias.";
+  };
+}
+"#;
+    create_test_file(temp_dir.path(), "cyclic.nix", content)?;
+
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
+
+    assert_eq!(options.len(), 1);
+    assert_eq!(options[0].name, "options.services.demo.thing");
+    assert_eq!(options[0].nix_type, "list of a");
+
+    Ok(())
+}
+
+/// The cycle guard is path-scoped (a fresh copy per branch), not a
+/// single shared visited set, precisely so that legitimate reuse of the
+/// same let-bound submodule type - by independent sibling options, or
+/// nested a level deeper through a second binding - keeps expanding
+/// normally instead of being misdiagnosed as a cycle the second time it
+/// is seen (nix-options-doc#6).
+#[test]
+fn test_reused_let_bound_submodule_not_flagged_as_cycle(
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let temp_dir = TempDir::new()?;
+    let content = r#"
+{ lib, ... }:
+let
+  leafModule = lib.types.submodule {
+    options = {
+      leaf = lib.mkOption {
+        type = lib.types.str;
+        description = "A leaf value.";
+      };
+    };
+  };
+  midModule = lib.types.submodule {
+    options = {
+      down = lib.mkOption {
+        type = lib.types.listOf leafModule;
+        default = [ ];
+        description = "Nested leaves, one level down.";
+      };
+    };
+  };
+in
+{
+  options.services.demo.reuseA = lib.mkOption {
+    type = lib.types.listOf leafModule;
+    default = [ ];
+    description = "First sibling reusing leafModule.";
+  };
+  options.services.demo.reuseB = lib.mkOption {
+    type = lib.types.listOf leafModule;
+    default = [ ];
+    description = "Second sibling reusing leafModule.";
+  };
+  options.services.demo.deep = lib.mkOption {
+    type = midModule;
+    description = "Deep nesting through midModule.";
+  };
+}
+"#;
+    create_test_file(temp_dir.path(), "reused.nix", content)?;
+
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
+
+    assert!(options
+        .iter()
+        .any(|o| o.name == "options.services.demo.reuseA.<name>.leaf"));
+    assert!(options
+        .iter()
+        .any(|o| o.name == "options.services.demo.reuseB.<name>.leaf"));
+    assert!(options
+        .iter()
+        .any(|o| o.name == "options.services.demo.deep.down.<name>.leaf"));
+
+    Ok(())
+}

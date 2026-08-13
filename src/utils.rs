@@ -308,6 +308,7 @@ pub fn process_nix_file(
                 &aliases,
                 &let_bindings,
                 None,
+                &[],
             ) {
                 Ok(file_options) => file_options,
                 Err(e) => {

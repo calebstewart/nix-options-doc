@@ -14,6 +14,12 @@ use rnix::{SyntaxKind, SyntaxNode};
 use rowan::ast::AstNode;
 use std::collections::HashMap;
 
+/// Backstop cap on how deep submodule/type-alias resolution will recurse.
+/// Cycle detection (below, and in `parser`) is the real termination
+/// condition; this only bounds pathological but acyclic chains so a
+/// generated file can't blow the stack. Real-world nesting is <10 deep.
+pub(crate) const MAX_SUBMODULE_DEPTH: usize = 32;
+
 /// Formats a type expression node into a human-readable description.
 pub fn format_type(node: &SyntaxNode, aliases: &HashMap<String, String>) -> String {
     format_node(node, aliases).unwrap_or_else(|| custom_dedent(node.text().to_string().trim()))
@@ -140,13 +146,33 @@ pub fn find_submodule_body(
     aliases: &HashMap<String, String>,
     let_bindings: &HashMap<String, SyntaxNode>,
 ) -> Option<(SyntaxNode, bool)> {
+    find_submodule_body_inner(node, aliases, let_bindings, &[])
+}
+
+/// Does the actual work for [`find_submodule_body`], threading a
+/// path-scoped list of `let`-binding names currently being resolved
+/// through ident hops (`visiting`) so a cyclic binding chain (e.g.
+/// `let a = b; b = a;`) terminates instead of recursing forever.
+///
+/// `visiting` is intentionally a plain `Vec` copied per branch rather than
+/// a shared `&mut` set: two *different* branches of the same type
+/// expression (e.g. `either includeModule includeModule`) must each be
+/// free to resolve the same binding name without the other flagging it as
+/// a cycle - only resolving back into a name already on the *current*
+/// path is a real cycle.
+fn find_submodule_body_inner(
+    node: &SyntaxNode,
+    aliases: &HashMap<String, String>,
+    let_bindings: &HashMap<String, SyntaxNode>,
+    visiting: &[String],
+) -> Option<(SyntaxNode, bool)> {
     let node = unwrap_paren(node);
     if let Some((name, args)) = resolve_call(&node, aliases) {
         return match name.as_str() {
             "submodule" | "submoduleWith" => Some((unwrap_paren(args.first()?), false)),
             "attrsOf" | "listOf" | "nonEmptyListOf" | "lazyAttrsOf" | "nullOr" | "uniq" => {
                 let inner = args.first()?;
-                let (body, _) = find_submodule_body(inner, aliases, let_bindings)?;
+                let (body, _) = find_submodule_body_inner(inner, aliases, let_bindings, visiting)?;
                 let is_container = !matches!(name.as_str(), "nullOr" | "uniq");
                 Some((body, is_container))
             }
@@ -156,8 +182,16 @@ pub fn find_submodule_body(
 
     if node.kind() == SyntaxKind::NODE_IDENT {
         let name = ident_text(&node)?;
+        if visiting.len() >= MAX_SUBMODULE_DEPTH || visiting.iter().any(|n| n == &name) {
+            log::debug!(
+                "Stopping type resolution at `{name}`: cyclic or too deeply nested `let` binding"
+            );
+            return None;
+        }
         let bound = let_bindings.get(&name)?.clone();
-        return find_submodule_body(&bound, aliases, let_bindings);
+        let mut visiting_next = visiting.to_vec();
+        visiting_next.push(name);
+        return find_submodule_body_inner(&bound, aliases, let_bindings, &visiting_next);
     }
 
     None
