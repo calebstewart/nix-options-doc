@@ -1,4 +1,4 @@
-use crate::utils::anchor_slug;
+use crate::utils::{anchor_slug, sanitize_link_target};
 use crate::OptionDoc;
 use std::fmt::Write;
 
@@ -32,7 +32,9 @@ pub fn generate_markdown(
         writeln!(
             output,
             "## [`{}`]({}#L{})",
-            option.name, primary.file_path, primary.line_number
+            option.name,
+            sanitize_link_target(&primary.file_path),
+            primary.line_number
         )?;
 
         // Description with preserved formatting
@@ -87,7 +89,9 @@ pub fn generate_markdown(
                 writeln!(
                     output,
                     "- [`{}`]({}#L{})",
-                    decl.file_path, decl.file_path, decl.line_number
+                    decl.file_path,
+                    sanitize_link_target(&decl.file_path),
+                    decl.line_number
                 )?;
                 if let Some(alt_description) = &decl.description {
                     writeln!(output, "  > {}", alt_description.replace('\n', "\n  > "))?;

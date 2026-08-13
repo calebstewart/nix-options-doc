@@ -2,7 +2,7 @@
 //! `OptionDoc` into its `<article class="option">` block plus its entry
 //! in the client-side search index.
 
-use crate::utils::anchor_slug;
+use crate::utils::{anchor_slug, sanitize_link_target};
 use crate::OptionDoc;
 use comrak::{markdown_to_html, Options as ComrakOptions};
 
@@ -132,9 +132,16 @@ pub(super) fn render_option(
             <span class="type-badge t-{category_class}">{category_label}</span>
         </div>
 "#,
-        slug = html_escape::encode_text(&slug),
+        // `anchor_slug` already guarantees output confined to
+        // `[A-Za-z0-9_-]`, a set on which `encode_double_quoted_attribute`
+        // and `encode_text` behave identically - there is no quote/tag
+        // character left for either to escape. Using the double-quoted
+        // variant here anyway is pure defense in depth: if `anchor_slug`'s
+        // guarantee ever regresses, this attribute stays safe on its own.
+        slug = html_escape::encode_double_quoted_attribute(&slug),
         category_class = category_class,
-        href = html_escape::encode_text(&primary.file_path),
+        href =
+            html_escape::encode_double_quoted_attribute(&sanitize_link_target(&primary.file_path)),
         line = primary.line_number,
         prefix = html_escape::encode_text(prefix),
         leaf = html_escape::encode_text(leaf),
@@ -164,21 +171,25 @@ pub(super) fn render_option(
         "        <div class=\"option-meta\">\n{meta_rows}        </div>\n"
     ));
 
+    let primary_decl_target = sanitize_link_target(&primary.file_path);
+    let primary_decl_href = html_escape::encode_double_quoted_attribute(&primary_decl_target);
+    let primary_decl_text = html_escape::encode_text(&primary.file_path);
     article.push_str(&format!(
-        r#"        <div class="option-decl"><a href="{0}#L{1}">{0}:{1}</a></div>
+        r#"        <div class="option-decl"><a href="{primary_decl_href}#L{line}">{primary_decl_text}:{line}</a></div>
 "#,
-        html_escape::encode_text(&primary.file_path),
-        primary.line_number
+        line = primary.line_number
     ));
 
     if !other_declarations.is_empty() {
         article.push_str("        <div class=\"also-declared-label\">Also declared in</div>\n");
         article.push_str("        <ul class=\"also-declared\">\n");
         for decl in other_declarations {
+            let decl_target = sanitize_link_target(&decl.file_path);
+            let decl_href = html_escape::encode_double_quoted_attribute(&decl_target);
+            let decl_text = html_escape::encode_text(&decl.file_path);
             article.push_str(&format!(
-                r#"            <li><a href="{0}#L{1}">{0}:{1}</a>"#,
-                html_escape::encode_text(&decl.file_path),
-                decl.line_number
+                r#"            <li><a href="{decl_href}#L{line}">{decl_text}:{line}</a>"#,
+                line = decl.line_number
             ));
             if let Some(alt) = &decl.description {
                 article.push_str(&format!(
