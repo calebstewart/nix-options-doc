@@ -25,8 +25,100 @@ static VAR_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\$\{([^}]+)\}"
 /// link generated against one output format lands on the same option in
 /// the other, and so it stays the same across regenerations rather than
 /// depending on a renderer's own heading-slug algorithm.
+///
+/// The output character set is deliberately restricted to
+/// `[A-Za-z0-9_-]`: option names can come from quoted Nix attribute keys
+/// (`options."evil\"key".enable`), so without a restriction this value
+/// could carry `"`, `<`, `>`, or other bytes straight into an HTML `id`
+/// attribute or Markdown anchor. Anything outside that set - including
+/// `.`, which is otherwise a legal HTML `id` character - collapses to
+/// `-`, same as `:` always has.
 pub fn anchor_slug(name: &str) -> String {
-    name.replace(['.', ':'], "-")
+    name.chars()
+        .map(|c| match c {
+            'A'..='Z' | 'a'..='z' | '0'..='9' | '_' | '-' => c,
+            _ => '-',
+        })
+        .collect()
+}
+
+/// Reports whether `target` begins with a URI scheme other than a real
+/// `http://`/`https://` authority - i.e. whether it is dangerous to use
+/// as a link target rather than an ordinary relative/absolute path.
+///
+/// A URI scheme is `ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )` (RFC 3986
+/// §3.1) followed by `:`. Browsers strip ASCII tab, newline, and carriage
+/// return from anywhere in a URL before parsing its scheme (WHATWG URL
+/// Standard, "basic URL parser"), so a check against the literal prefix
+/// alone can be defeated by splicing one of those bytes into the scheme
+/// name (e.g. `java\tscript:`) - this strips them first, the same way,
+/// before looking for the scheme. A bare `http`/`https` scheme name is
+/// not enough to be considered safe; see the `://` check below.
+fn has_dangerous_scheme(target: &str) -> bool {
+    let cleaned: String = target
+        .chars()
+        .filter(|c| !matches!(c, '\t' | '\n' | '\r'))
+        .collect();
+    let trimmed = cleaned.trim_start_matches(|c: char| c.is_ascii_whitespace() || c.is_control());
+
+    let Some(colon) = trimmed.find(':') else {
+        return false;
+    };
+    let scheme = &trimmed[..colon];
+    let looks_like_scheme = scheme
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic())
+        && scheme
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'));
+    if !looks_like_scheme {
+        return false;
+    }
+
+    // Require the scheme to actually be followed by `//` - a real
+    // `http://`/`https://` authority, as `--out-prefix` legitimately
+    // produces (see README) - not just a bare `http`/`https` scheme
+    // name. A directory literally named `http:` joined with the rest of
+    // a path produces exactly one `/` after the colon
+    // (`http:/evil.example/x.nix`), which browsers still resolve as an
+    // authority for "special" schemes like http(s) even with only one
+    // slash present (WHATWG URL Standard's leniency for special-scheme
+    // authorities) - off-site navigation from what looks like a
+    // same-repo source link. Anything short of the literal `://` is
+    // therefore treated as dangerous, the same as any other scheme.
+    let rest = &trimmed[colon + 1..];
+    let is_real_http_url = rest.starts_with("//")
+        && (scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https"));
+
+    !is_real_http_url
+}
+
+/// Sanitizes a value before it is used as a link `href`/target: ordinary
+/// relative/absolute filesystem paths and `http(s)://` URLs pass through
+/// unchanged, and anything else - most importantly a `javascript:`,
+/// `data:`, `vbscript:`, or other URI scheme - is neutralized to an inert
+/// in-page anchor (`#`) instead.
+///
+/// Declaration file paths (`Declaration::file_path`) are formatted by
+/// hand into `href`/link-target values in both the HTML and Markdown
+/// generators, rather than going through comrak's Markdown link parser -
+/// so they never see comrak's own `javascript:`/`data:`/`vbscript:`
+/// filter, which only runs on links written *inside* a description. A
+/// `.nix` file living in a directory whose name is itself a URI scheme
+/// (every byte involved is legal in a Unix path) would otherwise become a
+/// live, clickable link that executes as that scheme (see
+/// nix-options-doc#14, nix-options-doc#15). This closes that gap; the
+/// existing double-quoted-attribute escaping in the HTML generator (see
+/// `anchor_slug` above) is unrelated and still required alongside it -
+/// one stops a quote breaking out of the attribute, the other stops the
+/// scheme itself from being dangerous.
+pub fn sanitize_link_target(target: &str) -> String {
+    if has_dangerous_scheme(target) {
+        "#".to_string()
+    } else {
+        target.to_string()
+    }
 }
 
 /// Replaces dynamic variables in the given text using the provided replacements.

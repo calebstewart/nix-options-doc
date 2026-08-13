@@ -26,7 +26,14 @@ pub fn generate_html(options: &[OptionDoc]) -> Result<String, NixDocError> {
     comrak_options.extension.autolink = true;
     comrak_options.extension.tasklist = true;
     comrak_options.extension.alerts = true;
-    comrak_options.render.r#unsafe = true; // Allow HTML in markdown (if needed)
+    // Descriptions come verbatim from third-party Nix modules, so they are
+    // untrusted input. `unsafe = false` makes comrak both refuse to pass raw
+    // HTML through and filter dangerous URL schemes (javascript:, data:, ...)
+    // out of link and image targets; `escape = true` then renders any raw HTML
+    // as visible literal text rather than comrak's default of silently
+    // dropping it behind a `<!-- raw HTML omitted -->` comment. See #14.
+    comrak_options.render.r#unsafe = false;
+    comrak_options.render.escape = true;
 
     let mut categories_present = HashSet::new();
 
