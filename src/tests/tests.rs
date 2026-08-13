@@ -172,6 +172,114 @@ fn test_hidden_files_exclusion() -> Result<(), Box<dyn std::error::Error + Send 
     Ok(())
 }
 
+/// Tests that `.nix` files inside hidden directories are not documented.
+///
+/// Only the entry being tested is checked for a leading dot, so before
+/// hidden directories were pruned during traversal a perfectly
+/// ordinary-looking `secret.nix` inside `.direnv`/`.git` passed the
+/// per-file filter and was documented (nix-options-doc#8).
+#[test]
+fn test_hidden_directories_are_pruned() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let temp_dir = TempDir::new()?;
+
+    fs::create_dir_all(temp_dir.path().join("modules"))?;
+    fs::create_dir_all(temp_dir.path().join(".direnv"))?;
+    fs::create_dir_all(temp_dir.path().join(".git").join("objects"))?;
+
+    create_test_file(
+        temp_dir.path().join("modules").as_path(),
+        "real.nix",
+        r#"{ options.real.thing.enable = lib.mkEnableOption "Real option"; }"#,
+    )?;
+    create_test_file(
+        temp_dir.path().join(".direnv").as_path(),
+        "secret.nix",
+        r#"{ options.hidden.thing.enable = lib.mkEnableOption "Hidden option"; }"#,
+    )?;
+    // Nested two levels deep: pruning must stop the descent, not just skip
+    // the hidden directory node itself.
+    create_test_file(
+        temp_dir.path().join(".git").join("objects").as_path(),
+        "deep.nix",
+        r#"{ options.git.thing.enable = lib.mkEnableOption "Git option"; }"#,
+    )?;
+
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
+
+    assert_eq!(options.len(), 1);
+    assert_eq!(options[0].name, "options.real.thing.enable");
+    assert!(!options
+        .iter()
+        .any(|o| o.name == "options.hidden.thing.enable"));
+    assert!(!options.iter().any(|o| o.name == "options.git.thing.enable"));
+    assert!(!options.iter().any(|o| o
+        .declarations
+        .iter()
+        .any(|d| d.file_path.contains(".direnv") || d.file_path.contains(".git"))));
+
+    Ok(())
+}
+
+/// Tests that a hidden directory passed as the root is still processed.
+///
+/// Pruning hidden entries must exempt depth 0: `--path` defaults to `"."`,
+/// and `walkdir` reports the root of `WalkDir::new(".")` with the file
+/// name `"."`, so a predicate without a depth check silently produces zero
+/// options for the default invocation and for an explicit hidden root such
+/// as `--path ./.config/nixos`.
+#[test]
+fn test_hidden_root_directory_is_still_processed(
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let temp_dir = TempDir::new()?;
+    let hidden_root = temp_dir.path().join(".config");
+    fs::create_dir_all(hidden_root.join("modules"))?;
+
+    create_test_file(
+        hidden_root.as_path(),
+        "top.nix",
+        r#"{ options.rooted.top.enable = lib.mkEnableOption "Top option"; }"#,
+    )?;
+    create_test_file(
+        hidden_root.join("modules").as_path(),
+        "nested.nix",
+        r#"{ options.rooted.nested.enable = lib.mkEnableOption "Nested option"; }"#,
+    )?;
+
+    let options = collect_options(hidden_root.as_path(), &[], &HashMap::new(), false, false)?;
+
+    assert_eq!(options.len(), 2);
+    assert!(options.iter().any(|o| o.name == "options.rooted.top.enable"));
+    assert!(options
+        .iter()
+        .any(|o| o.name == "options.rooted.nested.enable"));
+
+    Ok(())
+}
+
+/// Tests that the traversal predicate accepts a root whose walkdir file
+/// name is the literal `"."`.
+///
+/// `DirEntry::file_name` falls back to the whole path when the path has no
+/// final component, so the root of `WalkDir::new(".")` - the default
+/// `--path` - reports the file name `"."` and looks hidden. Only the
+/// depth-0 exemption saves it, and no `collect_options` test can cover
+/// this without mutating the process working directory.
+#[test]
+fn test_dot_root_entry_is_traversable() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // Take only the first yielded entry: that is the root itself, so this
+    // does not actually walk the crate directory.
+    let root = walkdir::WalkDir::new(".")
+        .into_iter()
+        .next()
+        .expect("walkdir always yields the root entry")?;
+
+    assert_eq!(root.depth(), 0);
+    assert_eq!(root.file_name().to_string_lossy(), ".");
+    assert!(utils::should_traverse_entry(&root));
+
+    Ok(())
+}
+
 /// Tests the parsing of multi-line description in option definition.
 #[test]
 fn test_multiline_description_parsing() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {

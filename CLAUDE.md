@@ -61,7 +61,7 @@ Four stages, all defined in `src/lib.rs`, called in order from `src/main.rs`:
 | Stage | Where | What it does |
 |---|---|---|
 | `prepare_path` | `src/lib.rs` | Returns the local path, or shallow-clones a git URL via `gix` into a `TempDir`. `main` holds that `TempDir` alive as `_temp_dir` so the clone isn't deleted mid-run. |
-| `collect_options` | `src/lib.rs` | `WalkDir` → `utils::should_process_file` → **`nix_files.sort()`** → rayon `par_iter` → `utils::process_nix_file`. Then merges same-named options into one `OptionDoc` with multiple `Declaration`s. |
+| `collect_options` | `src/lib.rs` | `WalkDir` + `filter_entry`/`utils::should_traverse_entry` (prunes hidden dirs below the root) → `utils::should_process_file` → **`nix_files.sort()`** → rayon `par_iter` → `utils::process_nix_file`. Then merges same-named options into one `OptionDoc` with multiple `Declaration`s. |
 | `filter_options` | `src/lib.rs` | prefix / type / `--search` regex / `--has-*` filters, then `--strip-prefix`, then `renamed_to` anchor resolution, then `--out-prefix` on every declaration path. |
 | `generate_doc` | `src/lib.rs` | Optional sort, then dispatch on `OutputFormat`. |
 

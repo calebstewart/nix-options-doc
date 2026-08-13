@@ -319,7 +319,8 @@ pub fn custom_dedent(text: &str) -> String {
     }
 }
 
-/// Determines if a directory entry represents a hidden directory.
+/// Determines if a directory entry (file or directory) is hidden, i.e. its
+/// own name starts with a dot.
 ///
 /// # Arguments
 /// - `entry`: The directory entry to check.
@@ -328,6 +329,34 @@ pub fn custom_dedent(text: &str) -> String {
 /// True if the directory is hidden (starts with a dot), false otherwise.
 fn is_hidden(entry: &walkdir::DirEntry) -> bool {
     entry.file_name().to_string_lossy().starts_with('.')
+}
+
+/// Determines whether the directory walker should yield and descend into
+/// an entry.
+///
+/// Hidden entries (name starting with `.`) are rejected so that
+/// `WalkDir::filter_entry` prunes the whole subtree rather than merely
+/// skipping the directory node itself: without this, a non-hidden `.nix`
+/// file inside `.direnv`, `.git`, `.cache`, ... still reaches
+/// `should_process_file` and gets documented, and `.git` is walked in full
+/// on every run (see nix-options-doc#8).
+///
+/// The entry at depth 0 — the root the user actually pointed at — is
+/// always accepted. `walkdir::DirEntry::file_name` falls back to the whole
+/// path when the path has no final component, so the default `--path .`
+/// yields the literal file name `"."` for the root, and an explicit
+/// `--path ./.config/nixos` or `--path ..` is likewise "hidden" by this
+/// test. Rejecting the root would make those invocations silently produce
+/// zero options.
+///
+/// # Arguments
+/// - `entry`: The directory entry to test.
+///
+/// # Returns
+/// True if the walker should yield and descend into the entry, false if
+/// the entry (and its subtree, if any) should be pruned.
+pub fn should_traverse_entry(entry: &walkdir::DirEntry) -> bool {
+    entry.depth() == 0 || !is_hidden(entry)
 }
 
 /// Determines if a file should be processed based on extension and exclusion criteria.

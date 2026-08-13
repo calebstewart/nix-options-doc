@@ -153,6 +153,10 @@ Options:
   -V, --version                    Print version
 ```
 
+**Note:** hidden files and directories (names starting with `.`, such as
+`.git`, `.direnv`, `.cache`) are skipped during traversal. The path you pass
+to `--path` is exempt, so `--path ./.config/nixos` still works.
+
 ### Shell Completions
 
 ```bash
