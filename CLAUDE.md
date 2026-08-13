@@ -3,6 +3,10 @@
 Navigation guide for this repo. The `README.md` covers installation, the full CLI flag
 reference, and usage examples — this file covers *how to work in the code*.
 
+References below point to files and named symbols, never line numbers — line numbers drift
+stale on every merge, while a symbol like `parse_attrset` or `anchor_slug` is one `rg` command
+away regardless of how the file has changed. Don't re-add line numbers.
+
 ## What this is
 
 A Rust CLI that generates NixOS module option documentation (Markdown / HTML / JSON / CSV).
@@ -41,7 +45,7 @@ RUST_LOG=debug cargo run -- --path ./some/modules   # parser skip reasons land h
 `nix build` builds the package with the *same* toolchain as the dev shell — `flake.nix`
 shares one `rustToolchain` between both on purpose so they can't drift.
 
-MSRV is **1.88** (`Cargo.toml:6`); the `msrv` CI job pins `1.88.0` on Ubuntu and runs
+MSRV is **1.88** (`Cargo.toml`); the `msrv` CI job pins `1.88.0` on Ubuntu and runs
 `cargo check --locked` — that `--locked` is the only place `Cargo.lock` staleness is
 caught. `cargo nextest run` covers macOS/Ubuntu/Windows on stable; `fmt`/`clippy` run once
 on Ubuntu/stable. CI also runs `cargo deny check` — see
@@ -52,27 +56,27 @@ Pure Cargo project — no justfile, Makefile, or package.json.
 
 ## Pipeline
 
-Four stages, all defined in `src/lib.rs`, called in order from `src/main.rs:15`:
+Four stages, all defined in `src/lib.rs`, called in order from `src/main.rs`:
 
 | Stage | Where | What it does |
 |---|---|---|
-| `prepare_path` | `lib.rs:341` | Returns the local path, or shallow-clones a git URL via `gix` into a `TempDir`. `main` holds that `TempDir` alive as `_temp_dir` so the clone isn't deleted mid-run. |
-| `collect_options` | `lib.rs:406` | `WalkDir` → `utils::should_process_file` → **`nix_files.sort()`** → rayon `par_iter` → `utils::process_nix_file`. Then merges same-named options into one `OptionDoc` with multiple `Declaration`s. |
-| `filter_options` | `lib.rs:222` | prefix / type / `--search` regex / `--has-*` filters, then `--strip-prefix`, then `renamed_to` anchor resolution, then `--out-prefix` on every declaration path. |
-| `generate_doc` | `lib.rs:568` | Optional sort, then dispatch on `OutputFormat`. |
+| `prepare_path` | `src/lib.rs` | Returns the local path, or shallow-clones a git URL via `gix` into a `TempDir`. `main` holds that `TempDir` alive as `_temp_dir` so the clone isn't deleted mid-run. |
+| `collect_options` | `src/lib.rs` | `WalkDir` → `utils::should_process_file` → **`nix_files.sort()`** → rayon `par_iter` → `utils::process_nix_file`. Then merges same-named options into one `OptionDoc` with multiple `Declaration`s. |
+| `filter_options` | `src/lib.rs` | prefix / type / `--search` regex / `--has-*` filters, then `--strip-prefix`, then `renamed_to` anchor resolution, then `--out-prefix` on every declaration path. |
+| `generate_doc` | `src/lib.rs` | Optional sort, then dispatch on `OutputFormat`. |
 
-Shell completions short-circuit before any of this, at `main.rs:19`.
+Shell completions short-circuit before any of this, in `src/main.rs`.
 
 Per-file drill-down inside `collect_options`:
 
 ```
-utils::process_nix_file            utils.rs:279
+utils::process_nix_file          src/utils.rs
   ├─ nix_call::collect_aliases / collect_let_bindings
-  ├─ parser::visit_node            parser.rs:37    walks the tree, builds the dotted prefix,
-  │    └─ parser::parse_attrset    parser.rs:295   folds mkIf conditions into scope
-  │                                                ^ the big dispatch on node kind — most
-  │                                                  parser work goes here
-  └─ parser::find_deprecations     parser.rs:724   mkRenamedOptionModule / mkRemovedOptionModule
+  ├─ parser::visit_node          src/parser.rs   walks the tree, builds the dotted prefix,
+  │    └─ parser::parse_attrset  src/parser.rs   folds mkIf conditions into scope
+  │                                              ^ the big dispatch on node kind — most
+  │                                              parser work goes here
+  └─ parser::find_deprecations   src/parser.rs   mkRenamedOptionModule / mkRemovedOptionModule
 ```
 
 Parallelism is rayon over *files only*; everything downstream is single-threaded.
@@ -83,7 +87,7 @@ Parallelism is rayon over *files only*; everything downstream is single-threaded
 |---|---|
 | `src/main.rs` | Thin driver: init logging, parse CLI, run the four stages, write to stdout or `--out`. |
 | `src/lib.rs` | Crate root. CLI structs, `OptionDoc`/`Declaration`, and the four pipeline functions. |
-| `src/parser.rs` | rnix tree traversal. Recognizes `mkOption` (`:412`), `mkEnableOption`, `mkPackageOption`, `mkMerge`, `mkIf`, `let…in`, `with`, and `<expr> // { … }` overrides. Handles inline submodule recursion (bounded by `MAX_SUBMODULE_DEPTH`, `types.rs:21`, to guard against cyclic submodule types) and `freeformType`. |
+| `src/parser.rs` | rnix tree traversal. Recognizes `mkOption`, `mkEnableOption`, `mkPackageOption`, `mkMerge`, `mkIf`, `let…in`, `with`, and `<expr> // { … }` overrides. Handles inline submodule recursion (bounded by `MAX_SUBMODULE_DEPTH` in `src/types.rs`, to guard against cyclic submodule types) and `freeformType`. |
 | `src/types.rs` | Formats Nix type expressions into nixpkgs-style prose (`nullOr` → "null or …", `listOf` → "list of …"). Falls back to raw dedented source rather than guessing. |
 | `src/nix_call.rs` | Low-level AST helpers: unwind curried `NODE_APPLY` chains into `(fn_name, args)`, attrset key lookup, `let`-binding and alias collection. |
 | `src/utils.rs` | Per-file driver, description cleanup (admonitions, dedent, `literalExpression` unwrapping), `${var}` replacement, walkdir filtering, anchor slugs, `KEY=VALUE` arg parser. |
@@ -95,9 +99,9 @@ Parallelism is rayon over *files only*; everything downstream is single-threaded
 
 ### HTML generator
 
-- `html/mod.rs` orchestrates: configures comrak, builds the search index and category index,
-  then splices their JSON into the script template at the `__SEARCH_INDEX__` /
-  `__CATEGORY_INDEX__` placeholders (`mod.rs:97-107`). This is a single-pass `split_once`
+- `src/generate/html/mod.rs` orchestrates: configures comrak, builds the search index and
+  category index, then splices their JSON into the script template at the `__SEARCH_INDEX__` /
+  `__CATEGORY_INDEX__` placeholders. This is a single-pass `split_once`
   over the *pristine* template rather than sequential `String::replace` calls, so inserted
   data is never rescanned and a description that happens to contain literal placeholder text
   can't get treated as a second substitution target. The JSON itself has every `<` escaped
@@ -105,68 +109,69 @@ Parallelism is rayon over *files only*; everything downstream is single-threaded
   `<script`, or `</script` sequence — the escape is what actually keeps the `<script>`
   element from being prematurely closed or driven into script-data-escaped state, not the
   placeholder mechanism.
-- `html/render.rs` is per-option markup: `CATEGORIES` (`:11`, canonical legend order),
-  the `classify_type` heuristic (`:29`), `render_option`.
-- `html/template.rs` is 663 lines of **static** CSS/JS scaffolding — the CSS custom-property
-  design system (light, dark, explicit `data-theme`, reduced-motion), the no-flash theme
-  restore script, and the client-side regex search, which runs in a Web Worker built from a
-  Blob URL (`:65`) with an inline fallback. Editing HTML output usually means editing this file.
+- `src/generate/html/render.rs` is per-option markup: `CATEGORIES` (canonical legend order),
+  the `classify_type` heuristic, `render_option`.
+- `src/generate/html/template.rs` is ~670 lines of **static** CSS/JS scaffolding — the CSS
+  custom-property design system (light, dark, explicit `data-theme`, reduced-motion), the
+  no-flash theme restore script, and the client-side regex search, which runs in a Web Worker
+  built from a Blob URL (`workerSource`) with an inline fallback. Editing HTML output usually
+  means editing this file.
 
 ## Key types
 
-- **`OptionDoc`** (`lib.rs:185`) — `name`, `description`, `nix_type`, `default_value`,
+- **`OptionDoc`** (`src/lib.rs`) — `name`, `description`, `nix_type`, `default_value`,
   `example`, `renamed_to`, `declarations: Vec<Declaration>`.
-- **`Declaration`** (`lib.rs:160`) — `file_path`, `line_number`, plus `description`
+- **`Declaration`** (`src/lib.rs`) — `file_path`, `line_number`, plus `description`
   (populated only when this declaration's differs from the primary one) and `condition`
   (the *source text* of the guarding `mkIf`, joined with `&&` when nested).
 
   ⚠️ The serde derives on these two **are** the JSON output schema. Adding or renaming a
   field changes public output.
 
-- **CLI** — `Cli` (`lib.rs:38`) flattens four `Args` structs: `IoOptions` (`:61`),
-  `GitOptions` (`:88`), `FilterOptions` (`:103`), `UtilityOptions` (`:144`).
-  `OutputFormat` is at `:26`.
-- **`NixDocError`** (`error.rs:10`).
+- **CLI** — `Cli` (`src/lib.rs`) flattens four `Args` structs: `IoOptions`,
+  `GitOptions`, `FilterOptions`, `UtilityOptions`. `OutputFormat` is also in `src/lib.rs`.
+- **`NixDocError`** (`src/error.rs`).
 
 ## Non-obvious conventions
 
-- **Tests are `include!`d, not a normal test target.** `src/tests/tests.rs` (~1,600 lines,
-  ~34 tests) is textually included into a `#[cfg(test)] mod tests` at `lib.rs:20-23` so it can
+- **Tests are `include!`d, not a normal test target.** `src/tests/tests.rs` (~2,730 lines,
+  55 tests) is textually included into a `#[cfg(test)] mod tests` in `src/lib.rs` so it can
   reach private items via `use super::*`.
 - **No fixture files.** Every test builds a `tempfile::TempDir`, writes inline Nix with
-  `create_test_file` (`tests.rs:17`), calls `collect_options`, and asserts on the resulting
-  `Vec<OptionDoc>`. Follow that pattern for new tests.
-- **Two error types.** `parser.rs` returns `Box<dyn Error + Send + Sync>`; `lib.rs` and
-  `generate/` use `NixDocError`. The bridge is the `From` impl at `error.rs:72`.
+  `create_test_file` (`src/tests/tests.rs`), calls `collect_options`, and asserts on the
+  resulting `Vec<OptionDoc>`. Follow that pattern for new tests.
+- **Two error types.** `src/parser.rs` returns `Box<dyn Error + Send + Sync>`; `src/lib.rs`
+  and `src/generate/` use `NixDocError`. The bridge is the `From<Box<dyn Error + Send + Sync>>`
+  impl in `src/error.rs`.
 - **Graceful degradation is deliberate.** Unreadable or unparseable files log an error and
-  yield zero options (`utils.rs:315`, `:330`); an invalid `--search` regex logs and skips
+  yield zero options (`utils::process_nix_file`); an invalid `--search` regex logs and skips
   filtering. Don't "fix" these into hard failures.
-- **`nix_files.sort()` (`lib.rs:472`) is load-bearing.** It exists for determinism — sort
+- **`nix_files.sort()` (`src/lib.rs`) is load-bearing.** It exists for determinism — sort
   order decides which declaration becomes the primary one after merging.
-- **`utils::anchor_slug` (`utils.rs:28`) is shared by Markdown and HTML on purpose**, so links
+- **`utils::anchor_slug` (`src/utils.rs`) is shared by Markdown and HTML on purpose**, so links
   resolve identically in both regardless of any renderer's own heading-slug algorithm. Change
   both or neither.
-- **Regexes** are compiled once into `static … LazyLock<Regex>` (`utils.rs:18`, `:65`,
-  `:109`, `:155`).
+- **Regexes** are compiled once into `static … LazyLock<Regex>` (`VAR_REGEX`,
+  `ADMONITION_REGEX`, `PREFIX_REGEX`, `DIRECTIVE_REGEX` in `src/utils.rs`).
 - **No cargo features exist** — no `[features]` table, no `#[cfg(feature = …)]` anywhere. That's why CI dropped `cargo-hack`; if a `[features]` table is ever added, reinstate `cargo hack check --each-feature` in `run-tests.yml` (there's a comment there saying so).
 - **Doc style.** Public functions carry rustdoc with `# Arguments` / `# Returns`, and
   non-obvious decisions get long inline comments explaining *why*. Match that.
 
 ## Recipes
 
-- **An option isn't being detected** → run with `RUST_LOG=debug`. `parser.rs:702` logs
-  unhandled node kinds and `parser.rs:614` logs unrecognized option functions.
+- **An option isn't being detected** → run with `RUST_LOG=debug`. `parser::parse_attrset`
+  logs both unhandled node kinds and unrecognized option functions.
 - **Support a new option builtin** (`mkFooOption`) → add a match arm in `parse_attrset`
-  (`parser.rs:295`), near the `mkOption` arm at `:412`. Add a test.
-- **Support a new type combinator** → `types::format_ident` (`types.rs:113`) for bare
-  identifiers, `types::format_call` (`types.rs:45`) for applied ones.
+  (`src/parser.rs`), near the `mkOption` arm. Add a test.
+- **Support a new type combinator** → `types::format_ident` (`src/types.rs`) for bare
+  identifiers, `types::format_call` (`src/types.rs`) for applied ones.
 - **Add an output format** → new file under `src/generate/`, re-export from
-  `generate/mod.rs:12`, add an `OutputFormat` variant (`lib.rs:26`) and a matching
-  `generate_doc` arm (`lib.rs:568`).
-- **Add a CLI flag** → the relevant flattened `Args` struct in `lib.rs`, then wire it into
+  `src/generate/mod.rs`, add an `OutputFormat` variant (`src/lib.rs`) and a matching
+  `generate_doc` arm (`src/lib.rs`).
+- **Add a CLI flag** → the relevant flattened `Args` struct in `src/lib.rs`, then wire it into
   `filter_options` or `generate_doc`. The README's flag table needs a matching row.
-- **Change HTML appearance** → `generate/html/template.rs` (CSS/JS) or
-  `generate/html/render.rs` (per-option markup).
+- **Change HTML appearance** → `src/generate/html/template.rs` (CSS/JS) or
+  `src/generate/html/render.rs` (per-option markup).
 
 ## Fork notes
 
