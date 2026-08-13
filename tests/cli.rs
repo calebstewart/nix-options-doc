@@ -195,3 +195,33 @@ fn rust_log_still_overrides_the_default_filter() {
         "RUST_LOG=error should suppress the warn-level message, got: {stderr:?}"
     );
 }
+
+/// Regression test for #3: crate metadata feeds clap's `--version`/`--help`
+/// via `#[command(author, version, about)]`. clap 4 does not render `author`
+/// in help output, so fixing the manifest is expected to leave this output
+/// unchanged - this pins that, and pins that neither surface ever names the
+/// upstream project.
+#[test]
+fn version_and_help_do_not_mention_the_upstream_project() {
+    for flag in ["--version", "--help"] {
+        let output = Command::new(bin())
+            .arg(flag)
+            .output()
+            .unwrap_or_else(|e| panic!("failed to run nix-options-doc {flag}: {e}"));
+        assert!(output.status.success(), "{flag} should exit 0");
+
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            !text.contains("Thunderbottom"),
+            "{flag} output should not name the upstream repo, got: {text:?}"
+        );
+        assert!(
+            !text.contains("Chinmay"),
+            "{flag} output should not name the upstream author, got: {text:?}"
+        );
+    }
+}

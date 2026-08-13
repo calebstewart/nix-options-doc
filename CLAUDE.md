@@ -140,12 +140,12 @@ Parallelism is rayon over *files only*; everything downstream is single-threaded
 
 ## Non-obvious conventions
 
-- **Tests are `include!`d, not a normal test target.** `src/tests/tests.rs` (~2,730 lines,
-  59 tests) is textually included into a `#[cfg(test)] mod tests` in `src/lib.rs` so it can
-  reach private items via `use super::*`. Process-level CLI behavior (exit status, whether
-  `--out` is written, default log visibility) can't be observed that way, so it's covered
-  instead by an integration test at `tests/cli.rs`, which *is* a normal test target because it
-  must spawn the built binary.
+- **Tests are `include!`d, not a normal test target.** `src/tests/tests.rs` is textually
+  included into a `#[cfg(test)] mod tests` in `src/lib.rs` so it can reach private items via
+  `use super::*`. Process-level CLI behavior (exit status, whether `--out` is written, default
+  log visibility) can't be observed that way, so it's covered instead by `tests/cli.rs`, a
+  normal integration target that spawns the built binary via
+  `env!("CARGO_BIN_EXE_nix-options-doc")`.
 - **No fixture files.** Every test builds a `tempfile::TempDir`, writes inline Nix with
   `create_test_file` (`src/tests/tests.rs`), calls `collect_options`, and asserts on the
   resulting `Vec<OptionDoc>`. Follow that pattern for new tests.
@@ -197,6 +197,11 @@ Parallelism is rayon over *files only*; everything downstream is single-threaded
 Hard fork of `Thunderbottom/nix-options-doc`. Only `origin` is configured (this fork); there is
 no upstream remote and no upstream-compatibility constraint on changes.
 
-`Cargo.toml` still has `publish = false` and the original author/repository metadata, and
-`.github/workflows/build-release.yml` still points at the upstream release flow — worth
-revisiting before cutting any release from this fork.
+`Cargo.toml`'s `authors`/`repository`/`homepage` and the `LICENSE` copyright block now name both
+the original author and this fork's maintainer (#3); `repository` is what `src/generate/markdown.rs`
+and `src/generate/html/mod.rs` bake into their generated footers via `CARGO_PKG_REPOSITORY`, so
+changing it changes every generated document. `publish = false` is a deliberate, commented
+decision — this fork has never been published to crates.io.
+`.github/workflows/build-release.yml` is repo-agnostic (no hardcoded org/repo — it reads
+`$GITHUB_REPOSITORY` and the triggering release's tag) and builds natively on one runner per
+released target; it needed no fork-specific edit for #3.
