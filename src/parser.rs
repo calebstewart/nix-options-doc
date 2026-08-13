@@ -26,6 +26,10 @@ use std::collections::HashMap;
 ///   [`crate::nix_call::collect_let_bindings`]).
 /// - `condition`: The `mkIf` condition(s) currently in scope, if any (see
 ///   [`as_mkif`]), joined with `&&` when nested.
+/// - `submodule_stack`: The text ranges of submodule bodies currently
+///   being expanded on this path, innermost last (see [`parse_attrset`]).
+///   Forwarded unchanged; only the `mkOption` submodule-expansion arm in
+///   `parse_attrset` grows it.
 ///
 /// # Returns
 /// A vector of OptionDoc structs representing the found options or an error.
@@ -39,6 +43,7 @@ pub fn visit_node(
     aliases: &HashMap<String, String>,
     let_bindings: &HashMap<String, SyntaxNode>,
     condition: Option<&str>,
+    submodule_stack: &[rnix::TextRange],
 ) -> Result<Vec<OptionDoc>, Box<dyn std::error::Error + Send + Sync>> {
     let mut options = Vec::new();
 
@@ -65,6 +70,7 @@ pub fn visit_node(
                     aliases,
                     let_bindings,
                     condition,
+                    submodule_stack,
                 )?;
                 options.append(&mut nested_options);
             }
@@ -85,6 +91,7 @@ pub fn visit_node(
             aliases,
             let_bindings,
             Some(&new_condition),
+            submodule_stack,
         )?;
         options.append(&mut child_options);
     } else {
@@ -99,6 +106,7 @@ pub fn visit_node(
                 aliases,
                 let_bindings,
                 condition,
+                submodule_stack,
             )?;
             options.append(&mut child_options);
         }
@@ -271,6 +279,15 @@ fn scan_option_overrides(
 ///   [`crate::nix_call::collect_let_bindings`]).
 /// - `condition`: The `mkIf` condition(s) currently in scope, if any (see
 ///   [`visit_node`]).
+/// - `submodule_stack`: Text ranges of submodule bodies currently being
+///   expanded on this path, innermost last. Forwarded unchanged by every
+///   recursive call here *except* the `mkOption` submodule-expansion arm,
+///   which pushes the resolved body's range before recursing into it -
+///   and refuses to expand a body whose range is already on the stack
+///   (a recursive/tree-shaped submodule type) or once the stack reaches
+///   [`types::MAX_SUBMODULE_DEPTH`], so self-referential `let`-bound
+///   submodule types (nix-options-doc#6) terminate instead of recursing
+///   forever.
 ///
 /// # Returns
 /// A vector of OptionDoc structs representing the options in the attribute set or an error.
@@ -284,6 +301,7 @@ fn parse_attrset(
     aliases: &HashMap<String, String>,
     let_bindings: &HashMap<String, SyntaxNode>,
     condition: Option<&str>,
+    submodule_stack: &[rnix::TextRange],
 ) -> Result<Vec<OptionDoc>, Box<dyn std::error::Error + Send + Sync>> {
     let mut options = Vec::new();
     let node = &unwrap_paren(node);
@@ -301,6 +319,7 @@ fn parse_attrset(
                     aliases,
                     let_bindings,
                     condition,
+                    submodule_stack,
                 )?;
                 options.append(&mut child_options);
             }
@@ -329,6 +348,7 @@ fn parse_attrset(
                                 aliases,
                                 let_bindings,
                                 condition,
+                                submodule_stack,
                             )?;
                             options.append(&mut nested);
                         }
@@ -347,6 +367,7 @@ fn parse_attrset(
                             aliases,
                             let_bindings,
                             Some(&new_condition),
+                            submodule_stack,
                         )?;
                         options.append(&mut nested);
                     }
@@ -454,50 +475,73 @@ fn parse_attrset(
                         if let Some((body, is_container)) =
                             types::find_submodule_body(&type_node, aliases, let_bindings)
                         {
-                            let nested_prefix = if is_container {
-                                format!("{}.<name>", current_prefix)
+                            let body_range = body.text_range();
+                            // A submodule type that resolves back to a body
+                            // already being expanded is a recursive
+                            // (tree-shaped) type - Nix `let` bindings are
+                            // recursive, so following it would never
+                            // terminate. Document the option itself (done
+                            // above) and stop nesting here. The depth cap
+                            // is a backstop for acyclic-but-pathological
+                            // chains of distinct submodule bodies.
+                            if submodule_stack.contains(&body_range)
+                                || submodule_stack.len() >= types::MAX_SUBMODULE_DEPTH
+                            {
+                                log::debug!(
+                                    "Not expanding submodule for {current_prefix}: recursive or too deeply nested submodule type"
+                                );
                             } else {
-                                current_prefix.to_string()
-                            };
+                                let mut nested_stack = submodule_stack.to_vec();
+                                nested_stack.push(body_range);
 
-                            if let Some(options_attrset) = types::submodule_options_attrset(&body) {
-                                let mut nested = parse_attrset(
-                                    &options_attrset,
-                                    file_path,
-                                    &nested_prefix,
-                                    replacements,
-                                    source_text,
-                                    aliases,
-                                    let_bindings,
-                                    condition,
-                                )?;
-                                options.append(&mut nested);
-                            }
+                                let nested_prefix = if is_container {
+                                    format!("{}.<name>", current_prefix)
+                                } else {
+                                    current_prefix.to_string()
+                                };
 
-                            // `freeformType` marks a submodule as also
-                            // accepting undeclared options validated
-                            // against that type, alongside whatever's
-                            // explicitly listed in `options` - surface it
-                            // as a placeholder entry rather than silently
-                            // dropping it.
-                            if let Some(freeform_type_node) = types::find_freeform_type(&body) {
-                                options.push(OptionDoc {
-                                    name: format!("{}.<freeform>", nested_prefix),
-                                    description: Some(
-                                        "Any additional option accepted by this module's freeform type."
-                                            .to_string(),
-                                    ),
-                                    nix_type: types::format_type(&freeform_type_node, aliases),
-                                    default_value: None,
-                                    example: None,
-                                    renamed_to: None,
-                                    declarations: vec![Declaration {
-                                        file_path: file_path.to_string(),
-                                        line_number: get_line_number(node, source_text),
-                                        description: None,
-                                        condition: condition.map(str::to_string),
-                                    }],
-                                });
+                                if let Some(options_attrset) =
+                                    types::submodule_options_attrset(&body)
+                                {
+                                    let mut nested = parse_attrset(
+                                        &options_attrset,
+                                        file_path,
+                                        &nested_prefix,
+                                        replacements,
+                                        source_text,
+                                        aliases,
+                                        let_bindings,
+                                        condition,
+                                        &nested_stack,
+                                    )?;
+                                    options.append(&mut nested);
+                                }
+
+                                // `freeformType` marks a submodule as also
+                                // accepting undeclared options validated
+                                // against that type, alongside whatever's
+                                // explicitly listed in `options` - surface it
+                                // as a placeholder entry rather than silently
+                                // dropping it.
+                                if let Some(freeform_type_node) = types::find_freeform_type(&body) {
+                                    options.push(OptionDoc {
+                                        name: format!("{}.<freeform>", nested_prefix),
+                                        description: Some(
+                                            "Any additional option accepted by this module's freeform type."
+                                                .to_string(),
+                                        ),
+                                        nix_type: types::format_type(&freeform_type_node, aliases),
+                                        default_value: None,
+                                        example: None,
+                                        renamed_to: None,
+                                        declarations: vec![Declaration {
+                                            file_path: file_path.to_string(),
+                                            line_number: get_line_number(node, source_text),
+                                            description: None,
+                                            condition: condition.map(str::to_string),
+                                        }],
+                                    });
+                                }
                             }
                         }
                     }
@@ -583,6 +627,7 @@ fn parse_attrset(
                     aliases,
                     let_bindings,
                     condition,
+                    submodule_stack,
                 )?;
                 options.append(&mut nested_options);
             }
@@ -601,6 +646,7 @@ fn parse_attrset(
                     aliases,
                     let_bindings,
                     condition,
+                    submodule_stack,
                 )?;
                 options.append(&mut nested_options);
             }
@@ -625,6 +671,7 @@ fn parse_attrset(
                             aliases,
                             let_bindings,
                             condition,
+                            submodule_stack,
                         )?;
 
                         let rhs_node = unwrap_paren(rhs.syntax());
