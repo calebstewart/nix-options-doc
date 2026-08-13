@@ -36,7 +36,7 @@ fn test_basic_option_parsing() -> Result<(), Box<dyn std::error::Error + Send + 
 
     assert_eq!(options.len(), 1);
     assert_eq!(options[0].name, "options.test.simple.enable");
-    assert_eq!(options[0].nix_type.to_string(), "boolean");
+    assert_eq!(options[0].nix_type, "boolean");
     assert_eq!(
         options[0].description,
         Some("Whether to enable Simple test option.".to_string())
@@ -76,7 +76,7 @@ fn test_complex_option_parsing() -> Result<(), Box<dyn std::error::Error + Send 
         .iter()
         .find(|o| o.name == "options.test.complex.stringOpt")
         .unwrap();
-    assert_eq!(string_opt.nix_type.to_string(), "string");
+    assert_eq!(string_opt.nix_type, "string");
     assert_eq!(string_opt.description, Some("A string option".to_string()));
     assert_eq!(string_opt.default_value, Some("\"test\"".to_string()));
 
@@ -84,7 +84,7 @@ fn test_complex_option_parsing() -> Result<(), Box<dyn std::error::Error + Send 
         .iter()
         .find(|o| o.name == "options.test.complex.nested.value")
         .unwrap();
-    assert_eq!(nested_opt.nix_type.to_string(), "signed integer");
+    assert_eq!(nested_opt.nix_type, "signed integer");
     assert_eq!(
         nested_opt.description,
         Some("A nested number option".to_string())
@@ -323,9 +323,9 @@ fn test_multiline_description_parsing() -> Result<(), Box<dyn std::error::Error 
     assert_eq!(sorted_options[0].name, "options.test.complex.packages");
     assert_eq!(sorted_options[1].name, "options.test.complex.values");
 
-    assert_eq!(sorted_options[0].nix_type.to_string(), "list of string");
+    assert_eq!(sorted_options[0].nix_type, "list of string");
     assert_eq!(
-        sorted_options[1].nix_type.to_string(),
+        sorted_options[1].nix_type,
         "list of signed integer"
     );
 
@@ -1401,7 +1401,7 @@ fn test_anchor_slug_and_markdown_anchor() -> Result<(), Box<dyn std::error::Erro
     Ok(())
 }
 
-/// Tests that filter_options resolves a renamed-option shim's mention
+/// Tests that `filter_options` resolves a renamed-option shim's mention
 /// into a real link to the new option's anchor, and that the link stays
 /// correct whether or not --strip-prefix is used - the whole point being
 /// that the two must never drift apart, since a link built against the
@@ -2640,7 +2640,7 @@ fn test_description_interpolation_still_replaceable(
 
 /// Extracts the JS array literal from `const <name> = …;` in the
 /// generated page. A literal newline can never occur inside the JSON
-/// (serde_json escapes them), so the first `;\n` after the declaration
+/// (`serde_json` escapes them), so the first `;\n` after the declaration
 /// is its terminator.
 fn extract_js_array_literal<'a>(html: &'a str, decl: &str) -> &'a str {
     let start = html.find(decl).expect("declaration should be present") + decl.len();
@@ -2895,6 +2895,145 @@ fn test_generate_doc_empty_options_html() -> Result<(), Box<dyn std::error::Erro
     let category_literal = extract_js_array_literal(&html, "const categoryIndex = ");
     assert_eq!(search_literal, "[]");
     assert_eq!(category_literal, "[]");
+
+    Ok(())
+}
+
+/// Guards `convert_admonitions`' `clippy::match_same_arms` fix
+/// (`src/utils.rs`), which dropped the explicit `"note" => "NOTE"` arm as a
+/// duplicate of the `_ => "NOTE"` wildcard. A careless variant of that fix
+/// could delete the wildcard instead (leaving unrecognized types
+/// unconverted) or repoint the fallback at a different admonition type
+/// (e.g. `"IMPORTANT"`); either would silently change rendered output.
+/// Exercises both the explicit `note` type and an unrecognized `bogus`
+/// type through the full `collect_options` pipeline, and pins a surviving
+/// explicit arm (`warning`) alongside them.
+#[test]
+fn test_admonition_unknown_type_falls_back_to_note(
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let temp_dir = TempDir::new()?;
+    let content = r#"
+{
+  options.test.admonitions = lib.mkOption {
+    type = lib.types.bool;
+    default = false;
+    description = ''
+      ::: {.note}
+      An explicit note.
+      :::
+
+      ::: {.bogus}
+      An unrecognized admonition type.
+      :::
+
+      ::: {.warning}
+      A warning.
+      :::
+    '';
+  };
+}
+"#;
+    create_test_file(temp_dir.path(), "flake.nix", content)?;
+
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
+    assert_eq!(options.len(), 1);
+    let description = options[0]
+        .description
+        .as_ref()
+        .expect("description should be present");
+
+    assert_eq!(
+        description.matches("> [!NOTE]").count(),
+        2,
+        "both the explicit `note` and the unrecognized `bogus` type should \
+         render as [!NOTE]: {description:?}"
+    );
+    assert!(
+        !description.contains("[!BOGUS]"),
+        "unrecognized admonition type must not be rendered verbatim: {description:?}"
+    );
+    assert!(
+        description.contains("> [!WARNING]"),
+        "the surviving explicit `warning` arm must still render as \
+         [!WARNING]: {description:?}"
+    );
+
+    Ok(())
+}
+
+/// Guards the `match` → `if let`/`else` rewrite of the option-merge loop in
+/// `collect_options` (`src/lib.rs`, `clippy::single_match_else` fix). That
+/// rewrite must preserve first-wins semantics exactly: when the same option
+/// name is declared in more than one file, the primary `OptionDoc` (name,
+/// description, etc.) comes from whichever file `nix_files.sort()` placed
+/// first, and a per-declaration `description` is only populated on
+/// `Declaration`s whose description differs from that primary one.
+#[test]
+fn test_duplicate_option_merge_keeps_first_declaration_primary(
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let temp_dir = TempDir::new()?;
+    create_test_file(
+        temp_dir.path(),
+        "a.nix",
+        r#"
+{
+  options.test.shared = lib.mkOption {
+    type = lib.types.bool;
+    default = false;
+    description = "Description from a.nix.";
+  };
+}
+"#,
+    )?;
+    create_test_file(
+        temp_dir.path(),
+        "b.nix",
+        r#"
+{
+  options.test.shared = lib.mkOption {
+    type = lib.types.bool;
+    default = false;
+    description = "Description from b.nix.";
+  };
+}
+"#,
+    )?;
+
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
+    let shared: Vec<_> = options
+        .iter()
+        .filter(|o| o.name == "options.test.shared")
+        .collect();
+
+    assert_eq!(shared.len(), 1, "should merge into a single entry");
+    assert_eq!(
+        shared[0].description,
+        Some("Description from a.nix.".to_string()),
+        "first-found (a.nix, per nix_files.sort()) should win as primary"
+    );
+
+    let declarations = &shared[0].declarations;
+    assert_eq!(declarations.len(), 2);
+    assert!(
+        declarations[0].file_path.ends_with("a.nix"),
+        "declarations[0] should be a.nix: {:?}",
+        declarations[0].file_path
+    );
+    assert!(
+        declarations[1].file_path.ends_with("b.nix"),
+        "declarations[1] should be b.nix: {:?}",
+        declarations[1].file_path
+    );
+    assert_eq!(
+        declarations[0].description, None,
+        "primary declaration's description matches the OptionDoc's own, so \
+         it should not be repeated per-declaration"
+    );
+    assert_eq!(
+        declarations[1].description,
+        Some("Description from b.nix.".to_string()),
+        "the differing declaration should carry its own description"
+    );
 
     Ok(())
 }

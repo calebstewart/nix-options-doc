@@ -112,7 +112,7 @@ pub(super) fn search_index_entry(option: &OptionDoc) -> String {
 /// set).
 pub(super) fn render_option(
     option: &OptionDoc,
-    comrak_options: &ComrakOptions,
+    comrak_options: &ComrakOptions<'_>,
 ) -> (String, (&'static str, &'static str)) {
     let slug = anchor_slug(&option.name);
     let (category_class, category_label) = classify_type(&option.nix_type);

@@ -32,7 +32,7 @@ use std::collections::HashMap;
 ///   `parse_attrset` grows it.
 ///
 /// # Returns
-/// A vector of OptionDoc structs representing the found options or an error.
+/// A vector of `OptionDoc` structs representing the found options or an error.
 #[allow(clippy::too_many_arguments)]
 pub fn visit_node(
     node: &SyntaxNode,
@@ -293,7 +293,7 @@ fn scan_option_overrides(
         match (attr_key.as_deref(), attr_value) {
             (Some("type"), Some(v)) => overrides.nix_type = Some(types::format_type(&v, aliases)),
             (Some("description"), Some(v)) => {
-                overrides.description = Some(process_description(&string_text(&v), replacements))
+                overrides.description = Some(process_description(&string_text(&v), replacements));
             }
             (Some("default"), Some(v)) => overrides.default_value = Some(render_value(&v, aliases)),
             (Some("example"), Some(v)) => overrides.example = Some(render_value(&v, aliases)),
@@ -328,7 +328,7 @@ fn scan_option_overrides(
 ///   forever.
 ///
 /// # Returns
-/// A vector of OptionDoc structs representing the options in the attribute set or an error.
+/// A vector of `OptionDoc` structs representing the options in the attribute set or an error.
 #[allow(clippy::too_many_arguments)]
 fn parse_attrset(
     node: &SyntaxNode,
@@ -616,10 +616,10 @@ fn parse_attrset(
                     let mut description = overrides
                         .and_then(|attr_set| find_attr(attr_set, "description"))
                         .filter(|n| n.kind() == SyntaxKind::NODE_STRING)
-                        .map(|v| process_description(&string_text(&v), replacements))
-                        .unwrap_or_else(|| {
-                            format!("The {} package to use.", name_segments.join(" "))
-                        });
+                        .map_or_else(
+                            || format!("The {} package to use.", name_segments.join(" ")),
+                            |v| process_description(&string_text(&v), replacements),
+                        );
 
                     if let Some(extra) = overrides
                         .and_then(|attr_set| find_attr(attr_set, "extraDescription"))

@@ -28,11 +28,10 @@ pub fn generate_csv(options: &[OptionDoc]) -> Result<String, NixDocError> {
     for option in options {
         let default = option.default_value.as_deref().unwrap_or("-");
         // For CSV, we need to flatten the description to a single line
-        let description = option
-            .description
-            .as_deref()
-            .map(|d| d.replace('\n', " ").replace('\r', ""))
-            .unwrap_or_else(|| "-".to_string());
+        let description = option.description.as_deref().map_or_else(
+            || "-".to_string(),
+            |d| d.replace('\n', " ").replace('\r', ""),
+        );
 
         let declarations = option
             .declarations
@@ -49,7 +48,7 @@ pub fn generate_csv(options: &[OptionDoc]) -> Result<String, NixDocError> {
         // Handle CSV errors directly
         if let Err(err) = wtr.write_record([
             &option.name,
-            &option.nix_type.to_string(),
+            &option.nix_type,
             default,
             option.example.as_deref().unwrap_or("-"),
             &description,

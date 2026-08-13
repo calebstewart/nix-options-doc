@@ -33,7 +33,7 @@ fn bin() -> PathBuf {
 /// Regression test for #9 (the bug itself): a path whose only `.nix` file
 /// declares no options used to exit `0` without writing `--out` at all,
 /// leaving any stale file from a previous run silently in place, and the
-/// "No NixOS options found" warning was invisible by default (env_logger's
+/// "No NixOS options found" warning was invisible by default (`env_logger`'s
 /// default filter is `error`). This asserts all three are fixed: the
 /// process still exits `0` (an option-less tree is not an error - the fix
 /// is not "make it fail"), the output file is overwritten with a

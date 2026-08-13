@@ -51,7 +51,7 @@ impl NixDocError {
     /// - `error_type`: Function that constructs the specific error variant.
     ///
     /// # Returns
-    /// A new NixDocError with the source error message.
+    /// A new `NixDocError` with the source error message.
     pub fn with_message<E: std::fmt::Display>(err: E, error_type: fn(String) -> Self) -> Self {
         error_type(err.to_string())
     }
@@ -62,7 +62,7 @@ impl NixDocError {
     /// - `err`: Any error that implements Display.
     ///
     /// # Returns
-    /// A NixDocError::Csv variant with the formatted error message.
+    /// A `NixDocError::Csv` variant with the formatted error message.
     pub fn csv_error<E: std::fmt::Display>(err: E) -> Self {
         Self::with_message(err, NixDocError::Csv)
     }
