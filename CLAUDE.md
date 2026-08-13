@@ -101,7 +101,7 @@ Parallelism is rayon over *files only*; everything downstream is single-threaded
   over the *pristine* template rather than sequential `String::replace` calls, so inserted
   data is never rescanned and a description that happens to contain literal placeholder text
   can't get treated as a second substitution target. The JSON itself has every `<` escaped
-  to `<` (via `push_script_safe_json`) before insertion, so it can contain no `<!--`,
+  to `\u003c` (via `push_script_safe_json`) before insertion, so it can contain no `<!--`,
   `<script`, or `</script` sequence — the escape is what actually keeps the `<script>`
   element from being prematurely closed or driven into script-data-escaped state, not the
   placeholder mechanism.

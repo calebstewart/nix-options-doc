@@ -2694,6 +2694,13 @@ fn test_html_search_index_escapes_angle_brackets(
 /// `split_once` would silently treat only the first occurrence as the
 /// marker and leave the rest as literal dead text; this test turns that
 /// into a loud, immediate test failure instead.
+///
+/// The injection site also assumes `__SEARCH_INDEX__` appears *before*
+/// `__CATEGORY_INDEX__` - it calls `split_once("__SEARCH_INDEX__")` first,
+/// then `split_once("__CATEGORY_INDEX__")` on the remainder. A template
+/// edit that swapped their order would still pass the uniqueness checks
+/// above yet panic at runtime (the second `split_once` would find nothing
+/// to split on), so assert the order explicitly too.
 #[test]
 fn test_search_script_template_placeholders_are_unique() {
     assert_eq!(
@@ -2707,5 +2714,17 @@ fn test_search_script_template_placeholders_are_unique() {
             .matches("__CATEGORY_INDEX__")
             .count(),
         1
+    );
+
+    let search_pos = crate::generate::html::SEARCH_SCRIPT_TEMPLATE
+        .find("__SEARCH_INDEX__")
+        .expect("__SEARCH_INDEX__ should be present");
+    let category_pos = crate::generate::html::SEARCH_SCRIPT_TEMPLATE
+        .find("__CATEGORY_INDEX__")
+        .expect("__CATEGORY_INDEX__ should be present");
+    assert!(
+        search_pos < category_pos,
+        "generate_html's split_once chain assumes __SEARCH_INDEX__ precedes \
+         __CATEGORY_INDEX__ in the template"
     );
 }

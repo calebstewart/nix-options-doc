@@ -14,12 +14,20 @@ use template::HTML_TEMPLATE_HEAD;
 pub(crate) use template::SEARCH_SCRIPT_TEMPLATE;
 
 /// Appends `json` to `output` escaped so it cannot influence the HTML
-/// tokenizer's script-data state. Every `<` becomes `<`, so the
+/// tokenizer's script-data state. Every `<` becomes `\u003c`, so the
 /// emitted literal contains no `<` at all - `</script`, `<!--` and
 /// `<script` are therefore all unrepresentable. U+2028/U+2029 are
 /// escaped too: valid JSON, but line terminators inside a JS string
 /// literal on pre-ES2019 engines. Both escapes are transparent to
 /// `JSON`/JS string parsing, so the runtime value is unchanged.
+///
+/// This is value-preserving only because `<` can never occur outside a
+/// JSON string literal for the inputs actually passed here (`Vec<String>`/
+/// `Vec<&'static str>` via `serde_json::to_string`): structural JSON bytes
+/// are limited to `[ ] { } , : "`, none of which is `<`. A caller feeding
+/// this a JSON shape where `<` could appear outside a string (e.g. inside
+/// an unescaped raw literal embedded some other way) would not get a
+/// value-preserving escape from this function.
 fn push_script_safe_json(output: &mut String, json: &str) {
     for ch in json.chars() {
         match ch {

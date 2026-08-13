@@ -14,7 +14,7 @@
 /// rather than running `String::replace` over already-substituted output, so
 /// a description containing literal placeholder text can never be re-scanned
 /// and spliced into the script as if it were data (#16). The serialized JSON
-/// also has every `<` escaped to `<` before insertion, so it cannot
+/// also has every `<` escaped to `\u003c` before insertion, so it cannot
 /// contain `<!--`, `<script`, or `</script` and therefore cannot move the
 /// HTML tokenizer out of script-data state.
 pub(crate) const SEARCH_SCRIPT_TEMPLATE: &str = r#"    <script>
