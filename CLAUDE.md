@@ -131,7 +131,7 @@ Parallelism is rayon over *files only*; everything downstream is single-threaded
 - **Two error types.** `parser.rs` returns `Box<dyn Error + Send + Sync>`; `lib.rs` and
   `generate/` use `NixDocError`. The bridge is the `From` impl at `error.rs:72`.
 - **Graceful degradation is deliberate.** Unreadable or unparseable files log an error and
-  yield zero options (`utils.rs:314`, `:329`); an invalid `--search` regex logs and skips
+  yield zero options (`utils.rs:315`, `:330`); an invalid `--search` regex logs and skips
   filtering. Don't "fix" these into hard failures.
 - **`nix_files.sort()` (`lib.rs:472`) is load-bearing.** It exists for determinism — sort
   order decides which declaration becomes the primary one after merging.
