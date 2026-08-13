@@ -7,10 +7,17 @@
 ///
 /// `__SEARCH_INDEX__` is substituted with a JSON array of per-option
 /// searchable text (name, description, type, default, example), in the
-/// same order as the `.option` elements in the document; category
-/// filtering reads the `data-category` attribute already present on
-/// each `.option` element directly, so it needs no separate index.
-pub(super) const SEARCH_SCRIPT_TEMPLATE: &str = r#"    <script>
+/// same order as the `.option` elements in the document. `__CATEGORY_INDEX__`
+/// is substituted with a parallel JSON array of each option's type category,
+/// used to drive click-to-filter by the legend chips. Both substitutions are
+/// single-pass, splitting this pristine template around each placeholder
+/// rather than running `String::replace` over already-substituted output, so
+/// a description containing literal placeholder text can never be re-scanned
+/// and spliced into the script as if it were data (#16). The serialized JSON
+/// also has every `<` escaped to `\u003c` before insertion, so it cannot
+/// contain `<!--`, `<script`, or `</script` and therefore cannot move the
+/// HTML tokenizer out of script-data state.
+pub(crate) const SEARCH_SCRIPT_TEMPLATE: &str = r#"    <script>
     (function () {
         const searchText = __SEARCH_INDEX__;
         const categoryIndex = __CATEGORY_INDEX__;

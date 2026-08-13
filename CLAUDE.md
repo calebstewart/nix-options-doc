@@ -96,9 +96,15 @@ Parallelism is rayon over *files only*; everything downstream is single-threaded
 ### HTML generator
 
 - `html/mod.rs` orchestrates: configures comrak, builds the search index and category index,
-  then string-substitutes `__SEARCH_INDEX__` / `__CATEGORY_INDEX__` into the script template
-  (`mod.rs:97-107`). The `</` → `<\/` guard there stops a description from prematurely
-  closing the `<script>` tag.
+  then splices their JSON into the script template at the `__SEARCH_INDEX__` /
+  `__CATEGORY_INDEX__` placeholders (`mod.rs:97-107`). This is a single-pass `split_once`
+  over the *pristine* template rather than sequential `String::replace` calls, so inserted
+  data is never rescanned and a description that happens to contain literal placeholder text
+  can't get treated as a second substitution target. The JSON itself has every `<` escaped
+  to `\u003c` (via `push_script_safe_json`) before insertion, so it can contain no `<!--`,
+  `<script`, or `</script` sequence — the escape is what actually keeps the `<script>`
+  element from being prematurely closed or driven into script-data-escaped state, not the
+  placeholder mechanism.
 - `html/render.rs` is per-option markup: `CATEGORIES` (`:11`, canonical legend order),
   the `classify_type` heuristic (`:29`), `render_option`.
 - `html/template.rs` is 663 lines of **static** CSS/JS scaffolding — the CSS custom-property
