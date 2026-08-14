@@ -1372,6 +1372,103 @@ fn test_submodule_fanout_overshoot_is_bounded_by_file_size(
     Ok(())
 }
 
+/// The option cap alone bounds how many options a file may *emit*, not how
+/// much *work* the traversal does to emit them: a submodule body is re-walked
+/// on every expansion, and only the emitted options were charged
+/// (nix-options-doc#47). A body padded with attributes that never produce an
+/// option can therefore be re-walked thousands of times for free - total work
+/// is `O(option budget x body size)`, so a bigger body buys more runtime at
+/// the same option count. `MAX_SUBMODULE_EXPANSION_BYTES` charges each
+/// expansion the size of the body it re-walks, which caps that product.
+///
+/// Without the byte budget this input emits 10,011 options and takes ~19 s in
+/// a debug test binary; with it, 278 options in ~0.5 s.
+#[test]
+fn test_padded_submodule_body_expansion_is_work_bounded(
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let temp_dir = TempDir::new()?;
+
+    let mut content = String::from("{ lib, ... }:\nlet\n");
+    content.push_str(
+        "  m0 = lib.types.submodule {\n    options = {\n      leaf = lib.mkOption {\n        type = lib.types.str;\n        description = \"Leaf value.\";\n      };\n",
+    );
+    // Padding: plain attributes, not options - they cost traversal work on
+    // every re-walk of this body but never touch the option budget.
+    for j in 0..2_000 {
+        content.push_str(&format!("      pad{j} = \"junk value number {j}\";\n"));
+    }
+    content.push_str("    };\n  };\n");
+    for i in 1..=9 {
+        let prev = i - 1;
+        content.push_str(&format!(
+            "  m{i} = lib.types.submodule {{\n    options = {{\n      o0 = lib.mkOption {{ type = m{prev}; description = \"o0\"; }};\n      o1 = lib.mkOption {{ type = m{prev}; description = \"o1\"; }};\n      o2 = lib.mkOption {{ type = m{prev}; description = \"o2\"; }};\n    }};\n  }};\n"
+        ));
+    }
+    content.push_str(
+        "in\n{\n  options.services.demo.root = lib.mkOption {\n    type = m9;\n    description = \"Root option.\";\n  };\n}\n",
+    );
+
+    create_test_file(temp_dir.path(), "padded.nix", &content)?;
+
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
+
+    // The work budget stopped expansion long before the option budget could:
+    // without it this reaches MAX_SUBMODULE_EXPANSION_OPTIONS (10,000).
+    assert!(options.len() < 1_000);
+    // Graceful degradation: what was found is still emitted.
+    assert!(options
+        .iter()
+        .any(|o| o.name == "options.services.demo.root"));
+
+    Ok(())
+}
+
+/// Guards against the plausible wrong fix for nix-options-doc#47: a work
+/// budget set so low (or charged so eagerly) that ordinary modules get
+/// truncated. A large-but-realistic submodule body - one that is mostly
+/// non-option content, expanded a handful of times - must still expand in
+/// full, all the way to the deepest leaf.
+///
+/// For scale: the heaviest file in nixpkgs' `nixos/modules`
+/// (`services/networking/hostapd.nix`) re-walks ~94 KB of submodule bodies in
+/// total, and home-manager's heaviest (`services/syncthing.nix`) ~29 KB. This
+/// input re-walks ~1 MB, an order of magnitude more than either, and must
+/// still come through untruncated.
+#[test]
+fn test_moderately_padded_submodule_still_fully_expands(
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let temp_dir = TempDir::new()?;
+
+    let mut content = String::from("{ lib, ... }:\nlet\n");
+    content.push_str(
+        "  m0 = lib.types.submodule {\n    options = {\n      leaf = lib.mkOption {\n        type = lib.types.str;\n        description = \"Leaf value.\";\n      };\n",
+    );
+    for j in 0..3_000 {
+        content.push_str(&format!("      pad{j} = \"junk value number {j}\";\n"));
+    }
+    content.push_str("    };\n  };\n");
+    for i in 1..=3 {
+        let prev = i - 1;
+        content.push_str(&format!(
+            "  m{i} = lib.types.submodule {{\n    options = {{\n      o0 = lib.mkOption {{ type = m{prev}; description = \"o0\"; }};\n      o1 = lib.mkOption {{ type = m{prev}; description = \"o1\"; }};\n    }};\n  }};\n"
+        ));
+    }
+    content.push_str(
+        "in\n{\n  options.services.demo.root = lib.mkOption {\n    type = m3;\n    description = \"Root option.\";\n  };\n}\n",
+    );
+
+    create_test_file(temp_dir.path(), "moderate.nix", &content)?;
+
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
+
+    // Root + 14 intermediate options + 8 leaves, nothing truncated.
+    let deepest = format!("options.services.demo.root{}.leaf", ".o1".repeat(3));
+    assert!(options.iter().any(|o| o.name == deepest));
+    assert_eq!(options.len(), 23);
+
+    Ok(())
+}
+
 /// Guards against tempting-but-wrong fixes for nix-options-doc#21, such as
 /// lowering `MAX_SUBMODULE_DEPTH` or implementing the expansion budget as a
 /// depth/count limit that also truncates legitimate deep-but-narrow module
