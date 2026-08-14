@@ -291,12 +291,17 @@ fn test_admonition_unknown_type_falls_back_to_note(
 /// from the issue (an encoded scheme letter and an encoded tab/newline
 /// splice), the more dangerous variant the issue did not list (an encoded
 /// colon, which skips the literal check's `:`-search early-out entirely),
-/// named vs. numeric vs. hex entity forms, and a double-encoded payload that
-/// only a fixed-point decode (not a single pass) catches. Also asserts a
-/// representative sample of legitimate targets - including one containing a
-/// bare `&` and one with a `--out-prefix`-style query string - pass through
-/// unchanged, so the fix cannot be satisfied by over-blocking anything with
-/// an `&` in it.
+/// named vs. numeric vs. hex entity forms, a double-encoded payload that
+/// only a fixed-point decode (not a single pass) catches, and - per PR #56
+/// review round 1 - semicolon-less numeric references (`&#106avascript:`,
+/// `java&#9script:`), which the browser's HTML tokenizer still decodes (WHATWG
+/// HTML "numeric character reference end state") even though
+/// `html_escape::decode_html_entities` does not, so the literal `&#` shape
+/// must be caught directly rather than relying on the decode loop. Also
+/// asserts a representative sample of legitimate targets - including one
+/// containing a bare `&` and one with a `--out-prefix`-style query string -
+/// pass through unchanged, so the fix cannot be satisfied by over-blocking
+/// anything with an `&` in it.
 #[test]
 fn test_sanitize_link_target_decodes_entity_references() {
     let dangerous = [
@@ -308,6 +313,8 @@ fn test_sanitize_link_target_decodes_entity_references() {
         "java&#9;script:alert(1)",
         "&NewLine;javascript:alert(1)",
         "&amp;#106;avascript:alert(1)",
+        "&#106avascript:alert(1)",
+        "java&#9script:alert(1)",
     ];
     for payload in dangerous {
         assert_eq!(
@@ -321,7 +328,6 @@ fn test_sanitize_link_target_decodes_entity_references() {
         "modules/services/foo.nix",
         "https://github.com/user/repo/blob/main/modules/foo.nix",
         "https://git.example/plain/x.nix?ref=main&plain=1",
-        "&#106avascript:alert(1)",
         "modules/a&b/foo.nix",
     ];
     for payload in benign {

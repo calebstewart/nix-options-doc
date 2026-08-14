@@ -66,6 +66,20 @@ const MAX_ENTITY_DECODE_PASSES: usize = 3;
 /// that writes the decoded destination into an `href` without re-escaping `&`
 /// gives the browser's HTML parser a second decode pass, which is why this
 /// iterates to a fixed point rather than decoding once.
+///
+/// `html_escape::decode_html_entities` only decodes references terminated by
+/// `;`, matching `CommonMark`. The browser's HTML tokenizer is looser for
+/// *numeric* references: per the WHATWG HTML "numeric character reference
+/// end state", a missing `;` is a parse error but the code point is still
+/// emitted - only the named-reference path requires the terminator. So a
+/// renderer that writes an undecoded destination into an `href` without
+/// re-escaping `&` hands the browser a decode this crate's decoder can't
+/// reproduce, e.g. `&#106avascript:` -> `javascript:`, with no `;` anywhere
+/// for `decode_html_entities` to key on. Rather than reimplementing that
+/// tokenizer state, this fails closed on the literal shape instead: `&#`
+/// never legitimately appears in a real declaration path, and every
+/// numeric-entity scheme-smuggling attempt - semicolon-terminated or not -
+/// contains it.
 fn has_dangerous_scheme(target: &str) -> bool {
     if scheme_is_dangerous(target) {
         return true;
@@ -76,6 +90,9 @@ fn has_dangerous_scheme(target: &str) -> bool {
     if !target.contains('&') {
         return false;
     }
+    if target.contains("&#") {
+        return true;
+    }
 
     let mut candidate = target.to_string();
     for _ in 0..MAX_ENTITY_DECODE_PASSES {
@@ -84,7 +101,7 @@ fn has_dangerous_scheme(target: &str) -> bool {
             // Fixed point reached with nothing dangerous found.
             return false;
         }
-        if scheme_is_dangerous(&decoded) {
+        if scheme_is_dangerous(&decoded) || decoded.contains("&#") {
             return true;
         }
         candidate = decoded;
