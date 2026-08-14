@@ -23,7 +23,7 @@ fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // installs its own `error` default and warnings vanish again. That is stock
     // env_logger behaviour and we deliberately do not special-case it; see the
     // `empty_rust_log_falls_back_to_env_loggers_own_error_default` test in
-    // tests/cli.rs, which pins it. See #9 and #43.
+    // tests/cli/logging.rs, which pins it. See #9 and #43.
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
     let cli = Cli::parse();
 
