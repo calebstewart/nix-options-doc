@@ -31,11 +31,21 @@ use std::collections::HashMap;
 /// counter would make which file gets truncated depend on thread
 /// scheduling, destroying the run-to-run determinism `nix_files.sort()`
 /// exists to guarantee.
+///
+/// It also carries the warn-once flag for plain syntactic-nesting depth
+/// truncation ([`types::MAX_TRAVERSAL_DEPTH`], nix-options-doc#64) - a
+/// different concern from the expansion accounting above (that bounds
+/// submodule expansion breadth/work; this bounds plain tree depth), kept
+/// on the same struct only because it is already the one value threaded
+/// through the whole per-file traversal, with its own `warned` flag
+/// (`depth_warned`) so a depth truncation can't be masked by an expansion
+/// truncation that already warned, or vice versa.
 #[derive(Default)]
 pub struct ExpansionBudget {
     emitted: usize,
     expanded_bytes: usize,
     warned: bool,
+    depth_warned: bool,
 }
 
 impl ExpansionBudget {
@@ -101,11 +111,29 @@ impl ExpansionBudget {
             );
         }
     }
+
+    /// Warns that a walk stopped descending because it hit
+    /// [`types::MAX_TRAVERSAL_DEPTH`], at most once per file - a
+    /// pathologically nested file trips the check on every branch.
+    fn warn_depth_once(&mut self, file_path: &str) {
+        if self.depth_warned {
+            return;
+        }
+        self.depth_warned = true;
+        log::warn!(
+            "{file_path}: stopped descending after {} levels of nesting; \
+             output for this file is truncated",
+            types::MAX_TRAVERSAL_DEPTH
+        );
+    }
 }
 
 /// Recursively traverses the syntax tree of a Nix file to extract option definitions.
 ///
 /// # Arguments
+/// - `depth`: How many levels of syntax tree this walk has already
+///   descended. Bounded by [`types::MAX_TRAVERSAL_DEPTH`]; unlike
+///   `budget` (a per-file total) this is per-path, like `submodule_stack`.
 /// - `node`: The current syntax node being processed.
 /// - `file_path`: The relative file path of the Nix file for documentation reference.
 /// - `prefix`: The current option name prefix in the hierarchy.
@@ -129,6 +157,7 @@ impl ExpansionBudget {
 /// A vector of `OptionDoc` structs representing the found options or an error.
 #[allow(clippy::too_many_arguments)]
 pub fn visit_node(
+    depth: usize,
     node: &SyntaxNode,
     file_path: &str,
     prefix: &str,
@@ -140,6 +169,11 @@ pub fn visit_node(
     submodule_stack: &[rnix::TextRange],
     budget: &mut ExpansionBudget,
 ) -> Result<Vec<OptionDoc>, Box<dyn std::error::Error + Send + Sync>> {
+    if depth >= types::MAX_TRAVERSAL_DEPTH {
+        budget.warn_depth_once(file_path);
+        return Ok(Vec::new());
+    }
+
     let mut options = Vec::new();
 
     if node.kind() == SyntaxKind::NODE_ATTRPATH_VALUE {
@@ -157,6 +191,7 @@ pub fn visit_node(
                     format!("{}.{}", prefix, key)
                 };
                 let mut nested_options = parse_attrset(
+                    depth + 1,
                     &value_node,
                     file_path,
                     &new_prefix,
@@ -179,6 +214,7 @@ pub fn visit_node(
         // itself too).
         let new_condition = combine_condition(condition, &format_condition(&cond_node));
         let mut child_options = visit_node(
+            depth + 1,
             &value_node,
             file_path,
             prefix,
@@ -195,6 +231,7 @@ pub fn visit_node(
         // Visit all children for other node types
         for child in node.children() {
             let mut child_options = visit_node(
+                depth + 1,
                 &child,
                 file_path,
                 prefix,
@@ -405,6 +442,9 @@ fn scan_option_overrides(
 /// Parses an attribute set node to extract NixOS module option definitions.
 ///
 /// # Arguments
+/// - `depth`: How many levels of syntax tree this walk has already
+///   descended. Bounded by [`types::MAX_TRAVERSAL_DEPTH`]; unlike
+///   `budget` (a per-file total) this is per-path, like `submodule_stack`.
 /// - `node`: The syntax node representing the attribute set.
 /// - `file_path`: The file path of the Nix file for reference.
 /// - `current_prefix`: The current option name hierarchy as a dot-separated string.
@@ -433,6 +473,7 @@ fn scan_option_overrides(
 /// A vector of `OptionDoc` structs representing the options in the attribute set or an error.
 #[allow(clippy::too_many_arguments)]
 fn parse_attrset(
+    depth: usize,
     node: &SyntaxNode,
     file_path: &str,
     current_prefix: &str,
@@ -444,6 +485,11 @@ fn parse_attrset(
     submodule_stack: &[rnix::TextRange],
     budget: &mut ExpansionBudget,
 ) -> Result<Vec<OptionDoc>, Box<dyn std::error::Error + Send + Sync>> {
+    if depth >= types::MAX_TRAVERSAL_DEPTH {
+        budget.warn_depth_once(file_path);
+        return Ok(Vec::new());
+    }
+
     let mut options = Vec::new();
     let node = &unwrap_paren(node);
 
@@ -452,6 +498,7 @@ fn parse_attrset(
         SyntaxKind::NODE_ATTR_SET => {
             for child in node.children() {
                 let mut child_options = visit_node(
+                    depth + 1,
                     &child,
                     file_path,
                     current_prefix,
@@ -482,6 +529,7 @@ fn parse_attrset(
                     if let Some(list) = args.first().and_then(|n| ast::List::cast(n.clone())) {
                         for item in list.items() {
                             let mut nested = parse_attrset(
+                                depth + 1,
                                 item.syntax(),
                                 file_path,
                                 current_prefix,
@@ -502,6 +550,7 @@ fn parse_attrset(
                         let new_condition =
                             combine_condition(condition, &format_condition(&args[0]));
                         let mut nested = parse_attrset(
+                            depth + 1,
                             value,
                             file_path,
                             current_prefix,
@@ -690,6 +739,7 @@ fn parse_attrset(
                                     types::submodule_options_attrset(&body)
                                 {
                                     let mut nested = parse_attrset(
+                                        depth + 1,
                                         &options_attrset,
                                         file_path,
                                         &nested_prefix,
@@ -808,6 +858,7 @@ fn parse_attrset(
         SyntaxKind::NODE_WITH => {
             if let Some(body) = node.children().nth(1) {
                 let mut nested_options = visit_node(
+                    depth + 1,
                     &body,
                     file_path,
                     current_prefix,
@@ -828,6 +879,7 @@ fn parse_attrset(
         SyntaxKind::NODE_LET_IN => {
             if let Some(body) = ast::LetIn::cast(node.clone()).and_then(|let_in| let_in.body()) {
                 let mut nested_options = parse_attrset(
+                    depth + 1,
                     body.syntax(),
                     file_path,
                     current_prefix,
@@ -854,6 +906,7 @@ fn parse_attrset(
                 if bin_op.operator() == Some(ast::BinOpKind::Update) {
                     if let (Some(lhs), Some(rhs)) = (bin_op.lhs(), bin_op.rhs()) {
                         let mut base = parse_attrset(
+                            depth + 1,
                             lhs.syntax(),
                             file_path,
                             current_prefix,
@@ -913,12 +966,47 @@ fn parse_attrset(
 /// renders it as a callout directly, and HTML gets the same styling for
 /// free since descriptions already go through the same markdown
 /// pipeline there.
+///
+/// Recursion depth is bounded by [`types::MAX_TRAVERSAL_DEPTH`]
+/// (nix-options-doc#64), the same backstop `visit_node`/`parse_attrset`
+/// use, so a pathologically nested file can't overflow the stack here
+/// either. The two early `return found;` statements below (after
+/// `mkRenamedOptionModule`/`mkRemovedOptionModule` match) are unrelated to
+/// that bound - they exist to avoid double-counting the curried
+/// application chain `resolve_call` already unwound, not to limit depth.
 pub fn find_deprecations(
     node: &SyntaxNode,
     file_path: &str,
     source_text: &str,
     aliases: &HashMap<String, String>,
 ) -> Vec<OptionDoc> {
+    find_deprecations_inner(0, node, file_path, source_text, aliases)
+}
+
+/// Inner worker for [`find_deprecations`], carrying the recursion depth
+/// that its public wrapper starts at zero. See that function's rustdoc for
+/// what this does; this comment only covers the depth bound.
+///
+/// The bound is precautionary: these frames are small enough that they
+/// survived a 1,026-deep tree at 2 MiB of stack in testing (see
+/// [`types::MAX_TRAVERSAL_DEPTH`]'s doc comment), unlike `parse_attrset`,
+/// which was the first walk observed to overflow. It exists so no tree
+/// walk in this crate is left unbounded.
+fn find_deprecations_inner(
+    depth: usize,
+    node: &SyntaxNode,
+    file_path: &str,
+    source_text: &str,
+    aliases: &HashMap<String, String>,
+) -> Vec<OptionDoc> {
+    if depth >= types::MAX_TRAVERSAL_DEPTH {
+        log::debug!(
+            "{file_path}: stopped scanning for deprecation shims after {} levels of nesting",
+            types::MAX_TRAVERSAL_DEPTH
+        );
+        return Vec::new();
+    }
+
     let mut found = Vec::new();
 
     if node.kind() == SyntaxKind::NODE_APPLY {
@@ -1005,7 +1093,13 @@ pub fn find_deprecations(
     }
 
     for child in node.children() {
-        found.extend(find_deprecations(&child, file_path, source_text, aliases));
+        found.extend(find_deprecations_inner(
+            depth + 1,
+            &child,
+            file_path,
+            source_text,
+            aliases,
+        ));
     }
 
     found
