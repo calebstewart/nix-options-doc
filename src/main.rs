@@ -16,8 +16,15 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // `env_logger::init()` defaults to the `error` level when `RUST_LOG` is
     // unset, which silently drops every `log::warn!` in the program - including
     // "no options found" and skipped-directory warnings, the two things a user
-    // most needs to see. `default_filter_or` only applies when `RUST_LOG` is
-    // unset or empty, so `RUST_LOG=debug`/`RUST_LOG=error` still win. See #9.
+    // most needs to see. `default_filter_or` supplies "warn" only when `RUST_LOG`
+    // is *unset*: env_logger reads the variable first and falls back to the
+    // default only when that read fails, so `RUST_LOG=debug`/`RUST_LOG=error`
+    // still win. Note `RUST_LOG=""` also wins, and not in the useful direction -
+    // an empty value parses to zero filter directives, whereupon env_filter
+    // installs its own `error` default and warnings vanish again. That is stock
+    // env_logger behaviour and we deliberately do not special-case it; see the
+    // `empty_rust_log_falls_back_to_env_loggers_own_error_default` test in
+    // tests/cli.rs, which pins it. See #9 and #43.
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
     let cli = Cli::parse();
 
