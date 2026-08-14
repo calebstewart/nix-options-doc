@@ -1266,15 +1266,89 @@ fn test_submodule_fanout_is_bounded() -> Result<(), Box<dyn std::error::Error + 
     // The budget really was the thing that stopped it: the input is
     // genuinely pathological, not accidentally small.
     assert!(options.len() >= crate::types::MAX_SUBMODULE_EXPANSION_OPTIONS);
-    // The cap actually bounds the result, with slack for the bounded
-    // overshoot documented on the submodule-expansion arm in
-    // `src/parser.rs` (in-flight frames finish their own bodies' direct
-    // options after the budget is exhausted).
-    assert!(options.len() < crate::types::MAX_SUBMODULE_EXPANSION_OPTIONS + 1_000);
+    // The cap bounds the result, but not to a constant: once the budget is
+    // exhausted no *new* submodule body is expanded, yet every frame already
+    // in flight still emits its own body's remaining direct options as the
+    // recursion unwinds. The cycle guard makes each in-flight frame a
+    // distinct body, so the overshoot is bounded by the options declared in
+    // the file - depth x breadth, linear in file size (nix-options-doc#46;
+    // see the `budget.is_exhausted()` arm of `parse_attrset`). This input
+    // declares only 29 options, so its overshoot is necessarily tiny; that
+    // is a property of *this* input, not a guarantee. The general bound is
+    // exercised by `test_submodule_fanout_overshoot_is_bounded_by_file_size`.
+    let declared = content.matches("mkOption").count();
+    assert!(options.len() <= crate::types::MAX_SUBMODULE_EXPANSION_OPTIONS + declared);
 
     assert!(options
         .iter()
         .any(|o| o.name == "options.services.demo.root"));
+
+    Ok(())
+}
+
+/// The overshoot past `MAX_SUBMODULE_EXPANSION_OPTIONS` is depth x breadth,
+/// not a constant (nix-options-doc#46): when the budget trips, no new
+/// submodule body is expanded, but every already-in-flight frame still emits
+/// its own body's remaining direct options as the recursion unwinds. Each
+/// in-flight frame is a distinct body (the cycle guard in `parse_attrset`
+/// ensures that), so the overshoot is bounded by the options declared in the
+/// file - linear in file size.
+///
+/// `test_submodule_fanout_is_bounded` cannot show this: its input declares 29
+/// options, so its overshoot is 11 no matter what. This one pads every
+/// submodule body with plain options *after* the two options that drive the
+/// fan-out, so the unwind path has real work left to do - it emits 11,219
+/// options, an overshoot of 1,219. The assertion is the real invariant, so a
+/// regression that made the overshoot super-linear (re-expanding bodies after
+/// exhaustion, or resetting the budget per branch) fails here.
+#[test]
+fn test_submodule_fanout_overshoot_is_bounded_by_file_size(
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // Kept small on purpose: this input already runs ~1.6 s in a debug test
+    // binary, and the cost grows with both constants.
+    const DEPTH: usize = 12;
+    const BREADTH: usize = 100;
+
+    let temp_dir = TempDir::new()?;
+
+    let mut content = String::from("{ lib, ... }:\nlet\n");
+    content.push_str("  m0 = lib.types.submodule {\n    options = {\n");
+    for j in 0..BREADTH {
+        content.push_str(&format!(
+            "      p{j} = lib.mkOption {{ type = lib.types.str; description = \"p{j}\"; }};\n"
+        ));
+    }
+    content.push_str("    };\n  };\n");
+    for i in 1..=DEPTH {
+        let prev = i - 1;
+        content.push_str(&format!(
+            "  m{i} = lib.types.submodule {{\n    options = {{\n"
+        ));
+        for k in 0..2 {
+            content.push_str(&format!(
+                "      d{k} = lib.mkOption {{ type = m{prev}; description = \"d{k}\"; }};\n"
+            ));
+        }
+        for j in 0..BREADTH {
+            content.push_str(&format!(
+                "      p{j} = lib.mkOption {{ type = lib.types.str; description = \"p{j}\"; }};\n"
+            ));
+        }
+        content.push_str("    };\n  };\n");
+    }
+    content.push_str(&format!(
+        "in\n{{\n  options.services.demo.root = lib.mkOption {{ type = m{DEPTH}; description = \"root\"; }};\n}}\n"
+    ));
+
+    create_test_file(temp_dir.path(), "padded_fanout.nix", &content)?;
+
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
+
+    // The budget really fired - the input is genuinely pathological.
+    assert!(options.len() >= crate::types::MAX_SUBMODULE_EXPANSION_OPTIONS);
+    // ...and the overshoot stays within the options the file declares.
+    let declared = content.matches("mkOption").count();
+    assert!(options.len() <= crate::types::MAX_SUBMODULE_EXPANSION_OPTIONS + declared);
 
     Ok(())
 }

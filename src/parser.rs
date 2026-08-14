@@ -609,6 +609,15 @@ fn parse_attrset(
                                 // expanding once this file has produced
                                 // implausibly many options, keeping what
                                 // was found rather than failing the run.
+                                //
+                                // Note this bounds *expansion*, not emission:
+                                // frames already in flight still finish
+                                // emitting their own bodies' remaining direct
+                                // options as the recursion unwinds. Each is a
+                                // distinct body (see the cycle guard above),
+                                // so that overshoot is bounded by the options
+                                // declared in the file - linear in file size,
+                                // not a constant (nix-options-doc#46).
                                 budget.warn_once(file_path);
                             } else {
                                 let mut nested_stack = submodule_stack.to_vec();
