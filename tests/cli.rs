@@ -6,11 +6,10 @@
 //!
 //! These behaviors only exist at the level of `main` - process exit status,
 //! whether `--out` gets written, and default log visibility - which the
-//! `include!`d unit tests in `src/tests/tests.rs` cannot observe because
-//! they call library functions directly and never spawn the binary. Hence
-//! this is a normal (non-`include!`d) integration test target that builds
-//! and runs the actual `nix-options-doc` binary via
-//! `env!("CARGO_BIN_EXE_nix-options-doc")`.
+//! unit tests under `src/tests/` cannot observe because they call library
+//! functions directly and never spawn the binary. Hence this is a normal
+//! integration test target that builds and runs the actual
+//! `nix-options-doc` binary via `env!("CARGO_BIN_EXE_nix-options-doc")`.
 
 use std::path::PathBuf;
 use std::process::Command;
