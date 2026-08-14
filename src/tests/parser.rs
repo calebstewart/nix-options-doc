@@ -1752,23 +1752,35 @@ fn test_enable_option_fallback_empty_leaf_has_no_code_span(
 /// arms that call `get_line_number`: `mkOption` (`options.a`, `options.b`),
 /// `mkEnableOption` (`options.c.enable`), and `find_deprecations`
 /// (`options.old.one`).
+///
+/// The line-3 comment is padded with 200 four-byte emoji rather than a
+/// single café/☕ aside: a `LineIndex` built with `.chars().enumerate()`
+/// instead of `.bytes().enumerate()` undercounts every one of those
+/// characters by 3 bytes, so a short multi-byte comment (5 bytes of drift)
+/// never crosses a line boundary and the assertions below would stay green
+/// under that bug (nix-options-doc#55 review round 1, finding #1). ~600
+/// bytes of accumulated drift does cross it, so this padding is what
+/// actually discriminates a char-indexed `LineIndex` from a byte-indexed
+/// one; verified by reverting `LineIndex::new` to `.chars().enumerate()`
+/// and confirming this test then fails.
 #[test]
 fn test_declaration_line_numbers_match_source(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let temp_dir = TempDir::new()?;
-    let content = r#"{ lib, ... }:
-{
-  # café ☕ — multi-byte comment text before every option below
-  options.a = lib.mkOption { type = lib.types.str; description = "a"; };
-  options.b =
-lib.mkOption { type = lib.types.str; description = "b"; };
-  options.c.enable = lib.mkEnableOption "c";
-  imports = [
-    (lib.mkRenamedOptionModule [ "old" "one" ] [ "new" "one" ])
-  ];
-}
-"#;
-    create_test_file(temp_dir.path(), "flake.nix", content)?;
+    let mut content = String::from("{ lib, ... }:\n{\n");
+    content.push_str("  # ");
+    content.push_str(&"🎉".repeat(200));
+    content.push_str(" multi-byte comment text before every option below\n");
+    content
+        .push_str("  options.a = lib.mkOption { type = lib.types.str; description = \"a\"; };\n");
+    content.push_str("  options.b =\n");
+    content.push_str("lib.mkOption { type = lib.types.str; description = \"b\"; };\n");
+    content.push_str("  options.c.enable = lib.mkEnableOption \"c\";\n");
+    content.push_str("  imports = [\n");
+    content.push_str("    (lib.mkRenamedOptionModule [ \"old\" \"one\" ] [ \"new\" \"one\" ])\n");
+    content.push_str("  ];\n");
+    content.push_str("}\n");
+    create_test_file(temp_dir.path(), "flake.nix", &content)?;
 
     let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
 
@@ -1815,23 +1827,36 @@ fn test_line_number_is_one_for_a_single_line_module(
 /// Guards against building `LineIndex` from `str::lines()`, which strips
 /// `\r` from `\r\n` and desynchronises every subsequent offset on a CRLF
 /// file. Same source as `test_declaration_line_numbers_match_source`, just
-/// with `\r\n` line endings, and the same four line numbers must come out.
+/// with `\r\n` line endings and 300 padding lines before the first option.
+///
+/// The padding matters: a `str::lines()`-based `LineIndex` drifts by only 1
+/// byte (the stripped `\r`) per preceding line, and with only a couple of
+/// short header lines before the first option that drift never crosses a
+/// line boundary, so the assertions would stay green under that bug
+/// (nix-options-doc#55 review round 1, finding #2). 300 preceding CRLF
+/// lines accumulate ~300 bytes of drift, comfortably more than a single
+/// line's width, so this is what actually discriminates a `str::lines()`-
+/// built `LineIndex` from a byte-scan one; verified by reverting
+/// `LineIndex::new` to the `str::lines()` reconstruction and confirming
+/// this test then fails.
 #[test]
 fn test_line_numbers_are_unaffected_by_crlf_line_endings(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let temp_dir = TempDir::new()?;
-    let content = r#"{ lib, ... }:
-{
-  # café ☕ — multi-byte comment text before every option below
-  options.a = lib.mkOption { type = lib.types.str; description = "a"; };
-  options.b =
-lib.mkOption { type = lib.types.str; description = "b"; };
-  options.c.enable = lib.mkEnableOption "c";
-  imports = [
-    (lib.mkRenamedOptionModule [ "old" "one" ] [ "new" "one" ])
-  ];
-}
-"#;
+    let mut content = String::from("{ lib, ... }:\n{\n");
+    for i in 0..300 {
+        content.push_str(&format!("  # padding line {i}\n"));
+    }
+    content.push_str("  # café ☕ — multi-byte comment text before every option below\n");
+    content
+        .push_str("  options.a = lib.mkOption { type = lib.types.str; description = \"a\"; };\n");
+    content.push_str("  options.b =\n");
+    content.push_str("lib.mkOption { type = lib.types.str; description = \"b\"; };\n");
+    content.push_str("  options.c.enable = lib.mkEnableOption \"c\";\n");
+    content.push_str("  imports = [\n");
+    content.push_str("    (lib.mkRenamedOptionModule [ \"old\" \"one\" ] [ \"new\" \"one\" ])\n");
+    content.push_str("  ];\n");
+    content.push_str("}\n");
     create_test_file(temp_dir.path(), "crlf.nix", &content.replace('\n', "\r\n"))?;
 
     let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
@@ -1845,10 +1870,13 @@ lib.mkOption { type = lib.types.str; description = "b"; };
             .line_number
     };
 
-    assert_eq!(line_of("options.a"), 4);
-    assert_eq!(line_of("options.b"), 6);
-    assert_eq!(line_of("options.c.enable"), 7);
-    assert_eq!(line_of("options.old.one"), 9);
+    // 2 header lines + 300 padding lines + 1 café comment line = the first
+    // option starts on line 304; the rest follow the same layout as
+    // `test_declaration_line_numbers_match_source`.
+    assert_eq!(line_of("options.a"), 304);
+    assert_eq!(line_of("options.b"), 306);
+    assert_eq!(line_of("options.c.enable"), 307);
+    assert_eq!(line_of("options.old.one"), 309);
 
     Ok(())
 }
