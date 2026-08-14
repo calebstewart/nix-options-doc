@@ -530,11 +530,23 @@ fn parse_attrset(
                     // "Whether to enable ." with nothing to enable. Fall
                     // back to the option's own leaf name so it stays
                     // informative instead of just looking broken.
+                    //
+                    // The span is built with `inline_code` rather than a hard-coded pair of
+                    // backticks because `leaf` is a slice of an attribute key taken verbatim
+                    // from the scanned Nix source and may contain a backtick, which would
+                    // close the span early and leak the rest of the name into the prose
+                    // (issue #60; same defect class as #12 and #49). The empty-leaf filter
+                    // matters because `rsplit` always yields `Some` - `Some("")` for an
+                    // empty prefix, reachable via an interpolated key with an empty
+                    // `--replace` value - and both `format!("`{leaf}`")` and
+                    // `inline_code("")` would then emit a visible-but-empty code span
+                    // instead of degrading to nixpkgs' plain "Whether to enable .".
                     let subject = description.unwrap_or_else(|| {
                         current_prefix
                             .rsplit('.')
                             .next()
-                            .map(|leaf| format!("`{leaf}`"))
+                            .filter(|leaf| !leaf.is_empty())
+                            .map(crate::utils::inline_code)
                             .unwrap_or_default()
                     });
 
