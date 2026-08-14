@@ -213,7 +213,7 @@ fn test_anchor_slug_and_markdown_anchor() -> Result<(), Box<dyn std::error::Erro
         .find("<a id=\"services-nginx-enable\"></a>")
         .unwrap();
     let heading_pos = markdown
-        .find("## [`services.nginx.enable`](nginx.nix#L1)")
+        .find("## [`services.nginx.enable`](<nginx.nix#L1>)")
         .unwrap();
     assert!(anchor_pos < heading_pos);
 

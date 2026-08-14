@@ -200,7 +200,7 @@ non-zero.
 The Markdown output uses a heading-based structure for each option:
 
 ```markdown
-## [`services.nginx.enable`](modules/nginx/default.nix#L25)
+## [`services.nginx.enable`](<modules/nginx/default.nix#L25>)
 
 Whether to enable the Nginx web server.
 

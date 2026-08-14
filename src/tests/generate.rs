@@ -39,8 +39,8 @@ fn test_markdown_generation() -> Result<(), Box<dyn std::error::Error + Send + S
 
     // Validate markdown content
     assert!(markdown.contains("# NixOS Module Options"));
-    assert!(markdown.contains("## [`options.test.opt1`](test.nix#L1)"));
-    assert!(markdown.contains("## [`options.test.opt2`](test.nix#L2)"));
+    assert!(markdown.contains("## [`options.test.opt1`](<test.nix#L1>)"));
+    assert!(markdown.contains("## [`options.test.opt2`](<test.nix#L2>)"));
     assert!(markdown.contains("Test option 1"));
     assert!(markdown.contains("Test option 2"));
     assert!(markdown.contains("**Type:** `boolean`"));
@@ -62,6 +62,12 @@ fn test_markdown_generation() -> Result<(), Box<dyn std::error::Error + Send + S
 /// declaration and lists any others under "Also declared in:", showing
 /// a declaration's own description only when it differs from the
 /// primary one.
+///
+/// The secondary declaration's `file_path` and `condition` both carry a
+/// backtick, so this also guards the "Also declared in" call sites for
+/// `inline_code(&decl.file_path)` and `inline_code(condition)` - a
+/// per-hunk revert of either one back to `format!("`{}`", …)` must fail
+/// here (see PR #33 review: those two call sites had no coverage).
 #[test]
 fn test_markdown_also_declared_in() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let options = vec![OptionDoc {
@@ -79,10 +85,10 @@ fn test_markdown_also_declared_in() -> Result<(), Box<dyn std::error::Error + Se
                 condition: None,
             },
             Declaration {
-                file_path: "b.nix".to_string(),
+                file_path: "b`.nix".to_string(),
                 line_number: 5,
                 description: Some("Different description in b.nix.".to_string()),
-                condition: None,
+                condition: Some("cfg.mode == \"b`ackt`ick\"".to_string()),
             },
         ],
     }];
@@ -90,12 +96,15 @@ fn test_markdown_also_declared_in() -> Result<(), Box<dyn std::error::Error + Se
     let markdown = generate_markdown(&options)?;
 
     // Heading links to the first (primary) declaration.
-    assert!(markdown.contains("## [`options.test.shared`](a.nix#L1)"));
+    assert!(markdown.contains("## [`options.test.shared`](<a.nix#L1>)"));
     // The second declaration is listed separately, with its own
-    // (differing) description shown alongside it.
+    // (differing) description shown alongside it. Its file path and
+    // condition both contain a backtick, so they must render with a
+    // doubled delimiter, not a bare single-backtick span.
     assert!(markdown.contains("**Also declared in:**"));
-    assert!(markdown.contains("[`b.nix`](b.nix#L5)"));
+    assert!(markdown.contains("[``b`.nix``](<b`.nix#L5>)"));
     assert!(markdown.contains("Different description in b.nix."));
+    assert!(markdown.contains("Only declared when ``cfg.mode == \"b`ackt`ick\"``"));
 
     Ok(())
 }
@@ -741,6 +750,322 @@ fn test_generate_doc_empty_options_html() -> Result<(), Box<dyn std::error::Erro
     let category_literal = extract_js_array_literal(&html, "const categoryIndex = ");
     assert_eq!(search_literal, "[]");
     assert_eq!(category_literal, "[]");
+
+    Ok(())
+}
+
+/// Backslash-escaping a backtick has no effect inside a `CommonMark` code
+/// span (`CommonMark` §6: backslash escapes don't work there), so the old
+/// `.replace('`', "\\`")` on the type field left both a stray `\` in the
+/// output *and* a code span that a real backtick in the content still
+/// closed early. `**Default:**`/`**Example:**` got no handling at all.
+/// This test builds a type/default/example that each contain a single
+/// backtick and asserts they render as a correctly double-fenced span
+/// with the content verbatim, and that the inert backslash escape is
+/// gone from the output entirely.
+#[test]
+fn test_markdown_inline_code_escapes_backticks(
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let options = vec![OptionDoc {
+        name: "options.test.backtick".to_string(),
+        description: None,
+        nix_type: "one of \"a`b\", \"c\"".to_string(),
+        default_value: Some("\"echo `date`\"".to_string()),
+        example: Some("\"run `foo` now\"".to_string()),
+        renamed_to: None,
+        declarations: vec![Declaration {
+            file_path: "test.nix".to_string(),
+            line_number: 1,
+            description: None,
+            condition: None,
+        }],
+    }];
+
+    let markdown = generate_markdown(&options)?;
+
+    assert!(markdown.contains("**Type:** ``one of \"a`b\", \"c\"``"));
+    assert!(markdown.contains("**Default:** ``\"echo `date`\"``"));
+    assert!(markdown.contains("**Example:** ``\"run `foo` now\"``"));
+    // The old (inert) backslash-escaping approach must be gone entirely -
+    // this is what makes the test fail both on today's code and on a
+    // "just keep the backslash escape" wrong fix.
+    assert!(!markdown.contains("\\`"));
+
+    // Render through comrak (the crate's own Markdown renderer) and check
+    // the actual HTML, the strongest guard against a syntactically
+    // plausible but still-wrong fix.
+    let html = comrak::markdown_to_html(&markdown, &comrak::Options::default());
+    assert!(html.contains("<code>one of &quot;a`b&quot;, &quot;c&quot;</code>"));
+
+    Ok(())
+}
+
+/// Unit-tests `inline_code` directly (precedent: `utils::anchor_slug` is
+/// unit-tested the same way) to lock in the exact delimiter-length and
+/// padding rules from `CommonMark` §6, guarding against a plausible wrong
+/// fix that hard-codes a two-backtick delimiter regardless of content.
+#[test]
+fn test_markdown_inline_code_delimiter_and_padding() {
+    use crate::generate::markdown::inline_code;
+
+    // Ordinary content keeps a single-backtick delimiter - no gratuitous
+    // churn for the overwhelmingly common case.
+    assert_eq!(inline_code("plain"), "`plain`");
+    // A single backtick in the content bumps the delimiter to two.
+    assert_eq!(inline_code("a`b"), "``a`b``");
+    // A run of two backticks in the content bumps the delimiter to three.
+    assert_eq!(inline_code("a``b"), "```a``b```");
+    // Leading/trailing backtick gets space padding so it doesn't fuse
+    // with the delimiter run.
+    assert_eq!(inline_code("`lead"), "`` `lead ``");
+    assert_eq!(inline_code("trail`"), "`` trail` ``");
+    // Empty content becomes a single-space body - an empty span isn't
+    // expressible in CommonMark.
+    assert_eq!(inline_code(""), "` `");
+    // All-space content is NOT padded: CommonMark's "strip one space from
+    // each end" rule explicitly doesn't apply when the content is
+    // entirely spaces, so padding it would add two spurious spaces.
+    assert_eq!(inline_code("   "), "`   `");
+}
+
+/// `parser::format_condition` hands back the raw source text of a guarding
+/// `mkIf` predicate verbatim, which can span multiple lines. A code span
+/// cannot contain a line break at all - `CommonMark` ends the enclosing
+/// paragraph/list item at the newline instead - so `inline_code` must
+/// collapse internal whitespace (including the newline) to single spaces
+/// before rendering the condition. This test guards that collapsing.
+#[test]
+fn test_markdown_condition_is_single_line() -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+{
+    let options = vec![OptionDoc {
+        name: "options.test.cond".to_string(),
+        description: None,
+        nix_type: "boolean".to_string(),
+        default_value: None,
+        example: None,
+        renamed_to: None,
+        declarations: vec![Declaration {
+            file_path: "test.nix".to_string(),
+            line_number: 1,
+            description: None,
+            condition: Some("(cfg.mode == \"we`ird\"\n      && cfg.other)".to_string()),
+        }],
+    }];
+
+    let markdown = generate_markdown(&options)?;
+
+    let marker = "**Condition:** only declared when ";
+    let start = markdown
+        .find(marker)
+        .expect("condition line should be present");
+    let rest = &markdown[start + marker.len()..];
+    let line_end = rest.find('\n').expect("condition line should end");
+    let span = &rest[..line_end];
+
+    // The whole condition, including its embedded backtick, sits on a
+    // single line with no raw newline inside the span.
+    assert!(!span.contains('\n'));
+    assert!(span.starts_with("``") && span.trim_end().ends_with("``"));
+    assert!(markdown.contains("we`ird"));
+
+    Ok(())
+}
+
+/// A declaration file path containing a space or unbalanced parentheses
+/// breaks a bare (non-angle-bracket) `CommonMark` link destination outright.
+/// Guards both the heading link (primary declaration) and the "Also
+/// declared in" list (secondary declaration) now wrapping their
+/// destinations in `<...>`.
+#[test]
+fn test_markdown_link_destination_survives_spaces_and_parens(
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let options = vec![OptionDoc {
+        name: "options.test.paths".to_string(),
+        description: None,
+        nix_type: "boolean".to_string(),
+        default_value: None,
+        example: None,
+        renamed_to: None,
+        declarations: vec![
+            Declaration {
+                file_path: "sub(dir) x/mod.nix".to_string(),
+                line_number: 3,
+                description: None,
+                condition: None,
+            },
+            Declaration {
+                file_path: "other (1)/b.nix".to_string(),
+                line_number: 5,
+                description: None,
+                condition: None,
+            },
+        ],
+    }];
+
+    let markdown = generate_markdown(&options)?;
+
+    assert!(markdown.contains("](<sub(dir) x/mod.nix#L3>)"));
+    assert!(markdown.contains("](<other (1)/b.nix#L5>)"));
+    // The old bare-destination form must not appear anywhere.
+    assert!(!markdown.contains("](sub(dir) x/"));
+
+    let html = comrak::markdown_to_html(&markdown, &comrak::Options::default());
+    assert!(html.contains("<a href=\"sub(dir)%20x/mod.nix#L3\">"));
+
+    Ok(())
+}
+
+/// Without escaping, wrapping a destination in `<...>` is not by itself
+/// enough: a `<` or `>` already present in the content is `CommonMark`
+/// syntax too, and an unescaped `>` closes the destination early. Guards
+/// against a plausible wrong fix that wraps in angle brackets without
+/// escaping the content, and locks in the backslash-doubling needed for
+/// literal `\` (load-bearing on Windows, where `Declaration::file_path`
+/// uses `\` separators).
+#[test]
+fn test_markdown_link_destination_escapes_angle_brackets(
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let options = vec![OptionDoc {
+        name: "options.test.angle".to_string(),
+        description: None,
+        nix_type: "boolean".to_string(),
+        default_value: None,
+        example: None,
+        renamed_to: None,
+        declarations: vec![Declaration {
+            file_path: "we<ird>/a\\b.nix".to_string(),
+            line_number: 1,
+            description: None,
+            condition: None,
+        }],
+    }];
+
+    let markdown = generate_markdown(&options)?;
+
+    assert!(markdown.contains("](<we\\<ird\\>/a\\\\b.nix#L1>)"));
+
+    Ok(())
+}
+
+/// The parser can hand a backtick straight through into an option's own
+/// `name` (quoted Nix attribute keys aren't restricted the way
+/// `utils::anchor_slug` is - see its rustdoc). This test proves that end
+/// to end via `collect_options`, rather than constructing an `OptionDoc`
+/// literal by hand, so it actually exercises the parser path that can
+/// produce such a name.
+#[test]
+fn test_markdown_link_text_and_name_with_backtick(
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let temp_dir = TempDir::new()?;
+    let content = r#"
+{
+  options.services."ev`il".enable = lib.mkOption {
+    type = lib.types.bool;
+    default = false;
+    description = "Backtick in name.";
+  };
+}
+"#;
+    create_test_file(temp_dir.path(), "evil.nix", content)?;
+
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
+    let markdown = generate_markdown(&options)?;
+
+    assert!(markdown.contains("## [``options.services.\"ev`il\".enable``](<"));
+
+    Ok(())
+}
+
+/// The block-form renderer (used for multi-line or >72-char values) used
+/// to hard-code a three-backtick fence, which a default/example
+/// containing its own run of three backticks could close early. Guards
+/// the fence growing to four backticks when the content contains one -
+/// for all three block-form call sites (`nix_type`, `default_value`, and
+/// `example`), since each is routed through its own `nix_code_block`
+/// call and a per-hunk revert of any one of them must be caught.
+#[test]
+fn test_markdown_code_block_fence_grows() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let type_with_fence =
+        "a very long type description well past the seventy-two character wrap threshold\n```\nnested fence\n```"
+            .to_string();
+    let default_with_fence =
+        "a very long default value well past the seventy-two character wrap threshold\n```\nnested fence\n```"
+            .to_string();
+    let example_with_fence =
+        "a very long example value well past the seventy-two character wrap threshold\n```\nnested fence\n```"
+            .to_string();
+
+    let options = vec![OptionDoc {
+        name: "options.test.fence".to_string(),
+        description: None,
+        nix_type: type_with_fence.clone(),
+        default_value: Some(default_with_fence.clone()),
+        example: Some(example_with_fence.clone()),
+        renamed_to: None,
+        declarations: vec![Declaration {
+            file_path: "test.nix".to_string(),
+            line_number: 1,
+            description: None,
+            condition: None,
+        }],
+    }];
+
+    let markdown = generate_markdown(&options)?;
+
+    // Note: a bare `!markdown.contains("```nix\n")` check would be a false
+    // guard here - a correct four-backtick fence ("````nix\n") trivially
+    // contains a three-backtick run as a substring (shifted by one
+    // character), so that alone can't distinguish a three- from a
+    // four-backtick fence. Instead, build the exact expected four-
+    // backtick-fenced block via `nix_code_block` directly (same pattern
+    // as unit-testing `inline_code` in T2) and require the full block,
+    // fence and all, to appear verbatim - once per call site, so
+    // reverting any single one of the three block-form hunks fails here.
+    for content in [&type_with_fence, &default_with_fence, &example_with_fence] {
+        let four_backtick_fenced = crate::generate::markdown::nix_code_block(content);
+        assert!(four_backtick_fenced.starts_with("````nix\n"));
+        assert!(four_backtick_fenced.ends_with("\n````"));
+        assert!(markdown.contains(&four_backtick_fenced));
+    }
+
+    Ok(())
+}
+
+/// Code spans bind more tightly than link brackets in `CommonMark`, so
+/// `[` and `]` appearing inside link text that is itself a code span
+/// (e.g. a declaration file path used as link text) already render
+/// correctly with no extra handling - verified against comrak while
+/// writing this fix. Locks that in so a future "fix" that hand-escapes
+/// brackets doesn't regress it.
+#[test]
+fn test_markdown_link_text_brackets_still_render(
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let options = vec![OptionDoc {
+        name: "options.test.brackets".to_string(),
+        description: None,
+        nix_type: "boolean".to_string(),
+        default_value: None,
+        example: None,
+        renamed_to: None,
+        declarations: vec![
+            Declaration {
+                file_path: "primary.nix".to_string(),
+                line_number: 1,
+                description: None,
+                condition: None,
+            },
+            Declaration {
+                file_path: "a]b[c.nix".to_string(),
+                line_number: 5,
+                description: None,
+                condition: None,
+            },
+        ],
+    }];
+
+    let markdown = generate_markdown(&options)?;
+
+    assert!(markdown.contains("- [`a]b[c.nix`](<a]b[c.nix#L5>)"));
 
     Ok(())
 }
