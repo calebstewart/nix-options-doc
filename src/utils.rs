@@ -430,6 +430,7 @@ pub fn process_nix_file(
                 &let_bindings,
                 None,
                 &[],
+                &mut parser::ExpansionBudget::new(),
             ) {
                 Ok(file_options) => file_options,
                 Err(e) => {
