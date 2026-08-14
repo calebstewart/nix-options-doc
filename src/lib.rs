@@ -147,6 +147,12 @@ pub struct UtilityOptions {
     pub exclude_dir: Vec<String>,
 
     /// Enable traversing through symbolic links
+    ///
+    /// Hidden-directory pruning applies to the tree being walked, not to the
+    /// targets links resolve to: a non-hidden symlink that points into a
+    /// hidden directory is followed, and the options it reaches are
+    /// documented. Scanning an untrusted tree with this flag can therefore
+    /// read files the visible tree does not appear to expose.
     #[arg(long)]
     pub follow_symlinks: bool,
 
@@ -421,6 +427,11 @@ pub fn prepare_path(cli: &Cli) -> Result<(PathBuf, Option<TempDir>), NixDocError
 /// Hidden directories (name starting with `.`, e.g. `.git`, `.direnv`, `.cache`) below the
 /// root are pruned during traversal and never descended into; the root itself is exempt from
 /// this check, so a hidden directory passed directly as `dir` is still processed.
+///
+/// That pruning is by name and applies to the tree being walked, not to the targets symbolic
+/// links resolve to: with `follow_symlinks` set, a link whose own name is not hidden is
+/// followed even when it points into a hidden directory (nix-options-doc#42). That is the
+/// specified behavior of the flag, not an oversight - see `utils::should_traverse_entry`.
 ///
 /// # Arguments
 /// - `dir`: The base directory to search for Nix files.

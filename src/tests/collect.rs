@@ -106,6 +106,115 @@ fn test_hidden_root_directory_is_still_processed(
     Ok(())
 }
 
+/// Pins the specified behavior of `--follow-symlinks` for a link to a hidden
+/// *directory*: it is opt-in consent to leave the visible tree, so a
+/// non-hidden symlink that resolves into a hidden directory is followed and
+/// the options behind it are documented (nix-options-doc#42).
+///
+/// `utils::should_traverse_entry` prunes by name and a `DirEntry` for a
+/// symlink reports the *link's* name, so the predicate never sees `.hidden`.
+/// Pruning by resolved path instead would silently drop options for trees
+/// that symlink out to a hidden source directory (dotfiles/stow layouts), so
+/// changing this has to be a deliberate decision, not a drive-by fix.
+#[cfg(unix)]
+#[test]
+fn test_follow_symlinks_reaches_hidden_directories(
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use std::os::unix::fs::symlink;
+
+    let temp_dir = TempDir::new()?;
+    fs::create_dir_all(temp_dir.path().join(".hidden"))?;
+    create_test_file(
+        temp_dir.path().join(".hidden").as_path(),
+        "target.nix",
+        r#"{ options.linked.dir.enable = lib.mkEnableOption "Dir option"; }"#,
+    )?;
+    symlink(".hidden", temp_dir.path().join("linkdir"))?;
+
+    // Without the flag the link is inert: `linkdir` is never descended into.
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
+    assert!(
+        options.is_empty(),
+        "hidden content must stay pruned by default, got: {options:?}"
+    );
+
+    // With the flag the link is followed, and the declaration path is
+    // reported through the link name rather than the hidden original.
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, true)?;
+    assert_eq!(options.len(), 1);
+    assert_eq!(options[0].name, "options.linked.dir.enable");
+    assert_eq!(options[0].declarations[0].file_path, "linkdir/target.nix");
+
+    Ok(())
+}
+
+/// The same specified behavior for a link to a single hidden-directory
+/// *file*, which takes an entirely different code path: nothing is descended
+/// into, so `utils::should_traverse_entry` is not involved at all and only
+/// `utils::should_process_file`'s `is_hidden`/`is_file` test decides. A fix
+/// confined to the traversal predicate would close only half the hole, and
+/// this pins the other half so the two can never disagree silently
+/// (nix-options-doc#42).
+#[cfg(unix)]
+#[test]
+fn test_follow_symlinks_reaches_files_inside_hidden_directories(
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use std::os::unix::fs::symlink;
+
+    let temp_dir = TempDir::new()?;
+    fs::create_dir_all(temp_dir.path().join(".hidden"))?;
+    create_test_file(
+        temp_dir.path().join(".hidden").as_path(),
+        "target.nix",
+        r#"{ options.linked.file.enable = lib.mkEnableOption "File option"; }"#,
+    )?;
+    symlink(".hidden/target.nix", temp_dir.path().join("link.nix"))?;
+
+    // Without the flag the link's `file_type()` is `symlink`, not `file`,
+    // so `should_process_file` rejects it.
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
+    assert!(
+        options.is_empty(),
+        "a symlink must not be processed by default, got: {options:?}"
+    );
+
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, true)?;
+    assert_eq!(options.len(), 1);
+    assert_eq!(options[0].name, "options.linked.file.enable");
+    assert_eq!(options[0].declarations[0].file_path, "link.nix");
+
+    Ok(())
+}
+
+/// Guards against the wrong fix for nix-options-doc#42: `--follow-symlinks`
+/// widens traversal to symlink targets, it does not switch hidden-directory
+/// pruning off. A hidden directory that is simply present in the walked tree
+/// must stay pruned with the flag set, exactly as without it (#8).
+#[test]
+fn test_follow_symlinks_does_not_disable_hidden_pruning(
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let temp_dir = TempDir::new()?;
+    fs::create_dir_all(temp_dir.path().join(".direnv"))?;
+
+    create_test_file(
+        temp_dir.path(),
+        "real.nix",
+        r#"{ options.real.thing.enable = lib.mkEnableOption "Real option"; }"#,
+    )?;
+    create_test_file(
+        temp_dir.path().join(".direnv").as_path(),
+        "secret.nix",
+        r#"{ options.hidden.thing.enable = lib.mkEnableOption "Hidden option"; }"#,
+    )?;
+
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, true)?;
+
+    assert_eq!(options.len(), 1);
+    assert_eq!(options[0].name, "options.real.thing.enable");
+
+    Ok(())
+}
+
 /// Tests that duplicate option definitions are handled correctly.
 #[test]
 fn test_duplicate_prevention() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
