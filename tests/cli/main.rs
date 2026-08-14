@@ -27,3 +27,4 @@ mod fs_errors;
 mod help;
 mod logging;
 mod output;
+mod path_errors;

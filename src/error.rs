@@ -23,6 +23,18 @@ pub enum NixDocError {
     #[error("Not a valid local path or git repository: {0}")]
     InvalidPath(String),
 
+    /// The `--path` value names a local path that does not exist. Kept
+    /// distinct from `GitClone` so a typo'd path is not reported as a git
+    /// failure (#52).
+    #[error("Local path does not exist: {0}")]
+    LocalPathNotFound(String),
+
+    /// The `--path` value could not even be probed - e.g. a component of the
+    /// parent chain is not readable. Distinct from `LocalPathNotFound`
+    /// because "does not exist" would be a false claim here.
+    #[error("Cannot access local path {0}: {1}")]
+    LocalPathUnreadable(String, String),
+
     #[error("Failed to clone repository: {0}, {1}")]
     GitClone(String, String),
 
