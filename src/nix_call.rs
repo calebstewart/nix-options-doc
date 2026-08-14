@@ -3,6 +3,7 @@
 //! aliases (`let mkOpt = lib.mkOption; in ...`) so that calls through
 //! a renamed binding can still be recognized.
 
+use crate::types;
 use rnix::ast::{self, Expr, HasEntry};
 use rnix::SyntaxNode;
 use rowan::ast::AstNode;
@@ -86,11 +87,25 @@ pub fn find_attr(attrset: &SyntaxNode, key: &str) -> Option<SyntaxNode> {
 /// "rename a lib function for brevity" pattern.
 pub fn collect_aliases(root: &SyntaxNode) -> HashMap<String, String> {
     let mut aliases = HashMap::new();
-    collect_aliases_rec(root, &mut aliases);
+    collect_aliases_rec(0, root, &mut aliases);
     aliases
 }
 
-fn collect_aliases_rec(node: &SyntaxNode, aliases: &mut HashMap<String, String>) {
+/// Recursion depth is bounded by [`types::MAX_TRAVERSAL_DEPTH`]
+/// (nix-options-doc#64), the same backstop `parser::visit_node`/
+/// `parse_attrset` use. The bound here is precautionary rather than
+/// measured necessity - these frames are small enough that they survived
+/// a 1,026-deep tree at 2 MiB of stack in testing - but it exists so no
+/// tree walk in this crate is left unbounded.
+fn collect_aliases_rec(depth: usize, node: &SyntaxNode, aliases: &mut HashMap<String, String>) {
+    if depth >= types::MAX_TRAVERSAL_DEPTH {
+        log::debug!(
+            "stopped collecting aliases after {} levels of nesting",
+            types::MAX_TRAVERSAL_DEPTH
+        );
+        return;
+    }
+
     if let Some(let_in) = ast::LetIn::cast(node.clone()) {
         for entry in let_in.attrpath_values() {
             let Some(attrpath) = entry.attrpath() else {
@@ -115,7 +130,7 @@ fn collect_aliases_rec(node: &SyntaxNode, aliases: &mut HashMap<String, String>)
     }
 
     for child in node.children() {
-        collect_aliases_rec(&child, aliases);
+        collect_aliases_rec(depth + 1, &child, aliases);
     }
 }
 
@@ -133,11 +148,29 @@ fn collect_aliases_rec(node: &SyntaxNode, aliases: &mut HashMap<String, String>)
 /// does not attempt full scope resolution (shadowing, etc).
 pub fn collect_let_bindings(root: &SyntaxNode) -> HashMap<String, SyntaxNode> {
     let mut bindings = HashMap::new();
-    collect_let_bindings_rec(root, &mut bindings);
+    collect_let_bindings_rec(0, root, &mut bindings);
     bindings
 }
 
-fn collect_let_bindings_rec(node: &SyntaxNode, bindings: &mut HashMap<String, SyntaxNode>) {
+/// Recursion depth is bounded by [`types::MAX_TRAVERSAL_DEPTH`]
+/// (nix-options-doc#64), the same backstop `parser::visit_node`/
+/// `parse_attrset` use. The bound here is precautionary rather than
+/// measured necessity - these frames are small enough that they survived
+/// a 1,026-deep tree at 2 MiB of stack in testing - but it exists so no
+/// tree walk in this crate is left unbounded.
+fn collect_let_bindings_rec(
+    depth: usize,
+    node: &SyntaxNode,
+    bindings: &mut HashMap<String, SyntaxNode>,
+) {
+    if depth >= types::MAX_TRAVERSAL_DEPTH {
+        log::debug!(
+            "stopped collecting let-bindings after {} levels of nesting",
+            types::MAX_TRAVERSAL_DEPTH
+        );
+        return;
+    }
+
     if let Some(let_in) = ast::LetIn::cast(node.clone()) {
         for entry in let_in.attrpath_values() {
             let Some(attrpath) = entry.attrpath() else {
@@ -158,6 +191,6 @@ fn collect_let_bindings_rec(node: &SyntaxNode, bindings: &mut HashMap<String, Sy
     }
 
     for child in node.children() {
-        collect_let_bindings_rec(&child, bindings);
+        collect_let_bindings_rec(depth + 1, &child, bindings);
     }
 }

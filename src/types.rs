@@ -92,6 +92,35 @@ pub(crate) const MAX_SUBMODULE_EXPANSION_OPTIONS: usize = 10_000;
 /// options found so far, per this crate's graceful-degradation convention.
 pub(crate) const MAX_SUBMODULE_EXPANSION_BYTES: usize = 8 * 1024 * 1024;
 
+/// Backstop cap on how many levels deep any single syntax-tree walk in
+/// this crate may recurse.
+///
+/// [`MAX_SUBMODULE_DEPTH`] bounds *submodule expansion*; this bounds plain
+/// syntactic nesting, which nothing else did (nix-options-doc#64). Every
+/// walk over the rnix tree - `parser::visit_node`/`parse_attrset`,
+/// `parser::find_deprecations`, and the two collectors in `nix_call` -
+/// recurses once per tree level, and the tree depth is attacker-controlled:
+/// rnix caps its own parser recursion at 512, but a level of `{ n = ...; }`
+/// costs one parser recursion and produces two tree nodes, so a hostile
+/// file reaches ~1,000 levels and overflows the stack outright.
+///
+/// Sized for a 2 MiB thread stack in a *debug* build - the Rust default for
+/// spawned threads, which is what both rayon workers and libtest threads
+/// get. Measured there: `parse_attrset` frames cost ~4.7 KB, overflowing
+/// between 400 and 450 nested frames, while the deepest *legitimate*
+/// traversal - a submodule chain long enough to hit `MAX_SUBMODULE_DEPTH`
+/// (32 levels, ~3.2 frames each) - reaches 101. This value sits ~2.5x above
+/// the legitimate maximum and ~1.7x below the overflow floor. A smaller
+/// stack cannot be made safe by any cap: `rnix::Root::parse` itself
+/// overflows a 1 MiB debug stack on such a file before this crate's code
+/// runs.
+///
+/// Real modules nest a handful of levels; hitting this means the input is
+/// pathological, so - per this crate's graceful-degradation convention -
+/// the walk stops with a `log::warn!` and keeps whatever it already found,
+/// rather than aborting the process.
+pub(crate) const MAX_TRAVERSAL_DEPTH: usize = 256;
+
 /// Formats a type expression node into a human-readable description.
 pub fn format_type(node: &SyntaxNode, aliases: &HashMap<String, String>) -> String {
     format_node(node, aliases).unwrap_or_else(|| custom_dedent(node.text().to_string().trim()))

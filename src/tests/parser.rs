@@ -1508,6 +1508,146 @@ fn test_deep_narrow_submodule_chain_still_fully_expands(
     Ok(())
 }
 
+/// Builds `{ lib, ... }: { options.deep = { n = { n = ... <leaf mkOption>
+/// ... } }; }` with `depth` levels of `{ n = ...; }` wrapping a leaf
+/// `mkOption` - a plain (non-submodule) attrset nested `depth` levels
+/// deep, used by the nix-options-doc#64 traversal-depth tests below.
+fn deeply_nested_module(depth: usize) -> String {
+    let mut content = String::from("{ lib, ... }:\n{\n  options.deep = ");
+    for _ in 0..depth {
+        content.push_str("{ n = ");
+    }
+    content.push_str("lib.mkOption { type = lib.types.str; description = \"leaf\"; }");
+    for _ in 0..depth {
+        content.push_str("; }");
+    }
+    content.push_str(";\n}\n");
+    content
+}
+
+/// Regression test for nix-options-doc#64: `parser::visit_node`/
+/// `parse_attrset` recursed once per syntactic level of the tree with no
+/// depth guard, so a plain (non-submodule) attrset nested ~250+ levels
+/// deep overflowed the stack - distinct from `MAX_SUBMODULE_DEPTH`, which
+/// bounds only submodule expansion and never applies here, since nothing
+/// is being expanded.
+///
+/// Without the depth guard this **aborts the whole test process**
+/// (`fatal runtime error: stack overflow`) rather than failing an
+/// assertion, so a regression here shows up as a failed `cargo nextest
+/// run`, not a failed `assert!`. Measured in this worktree: 400 levels of
+/// nesting reliably reproduced the abort (`SIGABRT`) on the unfixed tree,
+/// with comfortable margin under the 256-level cap's measured overflow
+/// floor (~400-450 frames) once the guard is in place.
+#[test]
+fn test_deeply_nested_attrset_does_not_overflow_the_stack(
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let temp_dir = TempDir::new()?;
+    let content = deeply_nested_module(400);
+    create_test_file(temp_dir.path(), "deep.nix", &content)?;
+
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
+
+    // The leaf `mkOption` sits below `MAX_TRAVERSAL_DEPTH`, so the branch
+    // is truncated away - the point of this test is that `collect_options`
+    // returns `Ok` without crashing the process, not the exact count.
+    // Pinning it to exactly zero would make the test brittle if the cap is
+    // ever retuned.
+    assert!(options.len() <= 1);
+
+    Ok(())
+}
+
+/// Regression test for nix-options-doc#64, guarding against a wrong fix
+/// that charges the depth cap to the whole *file* (or bails out of the
+/// whole file once any branch gets too deep) rather than to each
+/// traversal *path*: an ordinary, shallow option declared alongside a
+/// 400-level-deep attrset in the same file must still be found. Graceful
+/// degradation means the deep branch is dropped, not the file.
+#[test]
+fn test_deeply_nested_attrset_still_finds_shallow_options(
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let temp_dir = TempDir::new()?;
+    let mut content = String::from(
+        "{ lib, ... }:\n{\n  options.services.demo.enable = lib.mkEnableOption \"demo\";\n  options.deep = ",
+    );
+    for _ in 0..400 {
+        content.push_str("{ n = ");
+    }
+    content.push_str("lib.mkOption { type = lib.types.str; description = \"leaf\"; }");
+    for _ in 0..400 {
+        content.push_str("; }");
+    }
+    content.push_str(";\n}\n");
+    create_test_file(temp_dir.path(), "mixed.nix", &content)?;
+
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
+
+    assert!(options
+        .iter()
+        .any(|o| o.name == "options.services.demo.enable"));
+
+    Ok(())
+}
+
+/// Regression test for nix-options-doc#64, guarding against a depth cap
+/// set far too low, or one charged per syntax *node* rather than per
+/// syntactic *level*: a 40-level plain attrset (traversal depth ~82,
+/// comfortably under `MAX_TRAVERSAL_DEPTH`'s 256 - the measured cut-off is
+/// ~126 levels) must expand in full, all the way to the leaf option.
+#[test]
+fn test_moderately_nested_attrset_still_fully_expands(
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let temp_dir = TempDir::new()?;
+    let content = deeply_nested_module(40);
+    create_test_file(temp_dir.path(), "moderate.nix", &content)?;
+
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
+
+    assert_eq!(options.len(), 1);
+    let expected_name = format!("options.deep{}", ".n".repeat(40));
+    assert_eq!(options[0].name, expected_name);
+
+    Ok(())
+}
+
+/// Regression test for nix-options-doc#64's *second* bug - the exact trap
+/// this issue's title sets: capping only `parse_attrset`/`visit_node`
+/// does not actually fix the crash, because `parser::find_deprecations` is
+/// a second, independent whole-tree recursion with no depth guard of its
+/// own. Found by bisecting the four unbounded walks in this crate during
+/// triage: with only `parse_attrset`/`visit_node` capped, a 500-level file
+/// still overflowed the stack, and `find_deprecations` - triggered here by
+/// scanning the same file for the `mkRenamedOptionModule` shim below - was
+/// the culprit.
+///
+/// Asserts both that `collect_options` returns `Ok` (no abort) *and* that
+/// the rename shim is still found: `find_deprecations` must be
+/// depth-limited, not skipped or disabled outright.
+#[test]
+fn test_deprecation_scan_survives_deep_nesting(
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let temp_dir = TempDir::new()?;
+    let mut content = String::from(
+        "{ lib, ... }:\n{\n  imports = [ (lib.mkRenamedOptionModule [ \"old\" \"opt\" ] [ \"new\" \"opt\" ]) ];\n  options.deep = ",
+    );
+    for _ in 0..500 {
+        content.push_str("{ n = ");
+    }
+    content.push_str("lib.mkOption { type = lib.types.str; description = \"leaf\"; }");
+    for _ in 0..500 {
+        content.push_str("; }");
+    }
+    content.push_str(";\n}\n");
+    create_test_file(temp_dir.path(), "deep_deprecation.nix", &content)?;
+
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
+
+    assert!(options.iter().any(|o| o.name == "options.old.opt"));
+
+    Ok(())
+}
+
 /// Guards against nix-options-doc#60: the `mkEnableOption ""` fallback used
 /// to build its "Whether to enable `<leaf>`." subject with a hard-coded
 /// single-backtick pair (`format!("`{leaf}`")`), even though `leaf` is a

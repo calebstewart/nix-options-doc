@@ -511,6 +511,7 @@ pub fn process_nix_file(
             let aliases = collect_aliases(&parse.syntax());
             let let_bindings = collect_let_bindings(&parse.syntax());
             let mut file_options = match parser::visit_node(
+                0,
                 &parse.syntax(),
                 &relative_path,
                 "",
