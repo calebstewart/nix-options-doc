@@ -359,12 +359,51 @@ pub fn filter_options(options: &[OptionDoc], cli: &Cli) -> Vec<OptionDoc> {
 /// A tuple containing the path to the working directory and an optional `TempDir` (for cleanup).
 /// If the path is local, returns the local path with None for `TempDir`.
 /// If the path is a git URL, clones the repository and returns the temp directory.
+///
+/// A local path that does not exist is reported as `NixDocError::LocalPathNotFound`
+/// rather than being handed to the clone branch: a value is only treated as a git
+/// URL when it is not an absolute filesystem path *and* `gix` parses it with a
+/// non-`file` scheme (`https`, `http`, `ssh`, `git`).
 pub fn prepare_path(cli: &Cli) -> Result<(PathBuf, Option<TempDir>), NixDocError> {
     // Check if the path is a local directory
     let path = Path::new(&cli.io.path);
-    if path.exists() {
-        log::debug!("Found local path: {}", path.to_string_lossy());
-        return Ok((path.to_path_buf(), None));
+    match path.try_exists() {
+        Ok(true) => {
+            log::debug!("Found local path: {}", path.to_string_lossy());
+            return Ok((path.to_path_buf(), None));
+        }
+        // Does not exist. Fall through to the "is this a git URL?" test below.
+        Ok(false) => {}
+        // `try_exists` rather than `exists`: `exists()` maps every IO error
+        // (notably an unreadable parent directory) to `false`, and reporting
+        // "does not exist" for a path that does exist would be the same class
+        // of misleading diagnostic this branch was added to fix (#52).
+        Err(e) => {
+            return Err(NixDocError::LocalPathUnreadable(
+                cli.io.path.clone(),
+                e.to_string(),
+            ));
+        }
+    }
+
+    // The path does not exist, so this is either a git URL or a mistyped local
+    // path. `gix::url::parse` cannot make that call on its own: it happily
+    // parses `./modules`, `modules-typo` and `..` as `Scheme::File`, which is
+    // exactly why a typo used to fall through to the clone branch and surface
+    // as "Failed to clone repository" (#52).
+    //
+    // The absolute-path test comes first and is load-bearing on Windows:
+    // `gix` parses `C:\Users\me\modules` as an *ssh* URL with host "c", so the
+    // scheme test alone would still send a Windows path to the clone branch.
+    if path.is_absolute() {
+        return Err(NixDocError::LocalPathNotFound(cli.io.path.clone()));
+    }
+
+    let url = gix::url::parse(cli.io.path.as_bytes())
+        .map_err(|e| NixDocError::InvalidPath(format!("Invalid git URL: {}", e)))?;
+
+    if url.scheme == gix::url::Scheme::File {
+        return Err(NixDocError::LocalPathNotFound(cli.io.path.clone()));
     }
 
     let temp_dir = TempDir::new()?;
@@ -385,9 +424,6 @@ pub fn prepare_path(cli: &Cli) -> Result<(PathBuf, Option<TempDir>), NixDocError
             NixDocError::GitOperation(format!("Failed to initialize interrupt handler: {}", e))
         })?;
     }
-
-    let url = gix::url::parse(cli.io.path.as_bytes())
-        .map_err(|e| NixDocError::InvalidPath(format!("Invalid git URL: {}", e)))?;
 
     // Prepare the clone builder
     let mut prepare_clone = gix::prepare_clone(url, temp_path).map_err(|e| {

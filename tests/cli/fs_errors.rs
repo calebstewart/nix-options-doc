@@ -130,3 +130,58 @@ fn unreadable_subdirectory_is_skipped_not_fatal() {
         "expected the skip warning on stderr, got: {stderr:?}"
     );
 }
+
+/// Regression test for #52 against the plausible wrong fix of keeping
+/// `Path::exists()` (which maps every IO error, including an unreadable
+/// parent directory, to `false`): a `--path` whose parent is unreadable does
+/// exist, so it must be reported as an access failure, not a missing path.
+#[test]
+fn unreadable_parent_reports_access_not_absence() {
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    let parent = temp_dir.path().join("parent");
+    let child = parent.join("child");
+    std::fs::create_dir_all(&child).expect("failed to create parent/child dirs");
+
+    set_mode(&parent, 0o000);
+    if !permissions_are_enforced(&parent) {
+        set_mode(&parent, 0o755);
+        eprintln!("skipping: permissions are not enforced for this process (root?)");
+        return;
+    }
+
+    let output = Command::new(bin())
+        .env_remove("RUST_LOG")
+        .arg("--path")
+        .arg(&child)
+        .arg("--out")
+        .arg(temp_dir.path().join("out.md"))
+        .output()
+        .expect("failed to run nix-options-doc");
+
+    set_mode(&parent, 0o755);
+
+    assert!(
+        !output.status.success(),
+        "expected a non-zero exit status, got {:?}; stderr: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Cannot access"),
+        "expected 'Cannot access' on stderr, got: {stderr:?}"
+    );
+    assert!(
+        stderr.contains("Permission denied"),
+        "expected the underlying reason on stderr, got: {stderr:?}"
+    );
+    assert!(
+        !stderr.contains("does not exist"),
+        "a path behind an unreadable parent does exist, so this must not claim otherwise, got: {stderr:?}"
+    );
+    assert!(
+        !stderr.contains("clone"),
+        "an access failure must not be reported as a clone failure, got: {stderr:?}"
+    );
+}
