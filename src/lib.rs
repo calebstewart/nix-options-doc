@@ -493,6 +493,20 @@ pub fn collect_options(
         let entry = match result {
             Ok(entry) => entry,
             Err(e) => {
+                // `walkdir` reports depth relative to the traversal root, so a
+                // depth-0 error is the root itself failing to open - nothing
+                // below it can produce one. That is categorically different
+                // from a single unreadable subdirectory: nothing was walked at
+                // all, so returning `Ok(vec![])` here would report "this tree
+                // declares no options" for a tree we never got to look at. The
+                // caller then overwrites `--out` with an empty document and
+                // exits 0, destroying a good result from an earlier run (#41).
+                // Errors below the root stay warnings - partial traversal is
+                // still a real result, and graceful degradation there is
+                // deliberate.
+                if e.depth() == 0 {
+                    return Err(NixDocError::WalkDir(e));
+                }
                 log::warn!("An error occurred, skipping directory: {}", e);
                 continue;
             }

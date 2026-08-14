@@ -4,15 +4,14 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 
-/// Entry point of the application.
-///
-/// Parses command line arguments, prepares the working directory (or clones a repository),
-/// collects NixOS module options from the specified path, applies filtering and variable replacements,
-/// generates documentation in the desired format, and outputs the result to stdout or a file.
+/// Runs the application: parses command line arguments, prepares the working directory (or
+/// clones a repository), collects NixOS module options from the specified path, applies
+/// filtering and variable replacements, generates documentation in the desired format, and
+/// outputs the result to stdout or a file.
 ///
 /// # Returns
 /// Returns `Ok(())` if the application completes successfully; otherwise returns an error with details.
-fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // `env_logger::init()` defaults to the `error` level when `RUST_LOG` is
     // unset, which silently drops every `log::warn!` in the program - including
     // "no options found" and skipped-directory warnings, the two things a user
@@ -91,4 +90,26 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     Ok(())
+}
+
+/// Process entry point. Runs [`run`] and turns its error, if any, into a
+/// readable message plus a failing exit status.
+///
+/// Returning `Result` from `main` directly would print the error with
+/// `Debug` (that is what the std `Termination` impl does), which for a
+/// `thiserror` enum dumps the variant and its whole nested `io::Error`
+/// struct instead of the message the `#[error(...)]` attributes define.
+/// `std::process::exit` is not an alternative here: `clippy::exit` is
+/// enabled in `Cargo.toml`'s `[lints.clippy]` and CI runs clippy with
+/// `-Dwarnings`.
+fn main() -> std::process::ExitCode {
+    match run() {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(e) => {
+            // Deliberately not `log::error!`: this is a fatal, user-facing
+            // message and must not be silenceable by `RUST_LOG=off`.
+            eprintln!("Error: {e}");
+            std::process::ExitCode::FAILURE
+        }
+    }
 }
