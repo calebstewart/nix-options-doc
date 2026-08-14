@@ -132,6 +132,13 @@ $ nix-options-doc --path https://github.com/user/repo.git \
     --out-prefix https://github.com/user/repo/blob/main
 ```
 
+Because `--path` accepts an arbitrary remote repository, the Nix it parses may be
+untrusted. Nothing in a cloned repository is ever *evaluated* — this tool only reads the
+source text — but see
+[Known Limitation: Very Deep Expressions](#known-limitation-very-deep-expressions) for
+the one input that can abort a run, and the `--follow-symlinks` note below for what a
+symbolic link can reach.
+
 ### Command Line Options
 
 ```
@@ -210,6 +217,46 @@ A `--path` that does not exist is reported as such (`Local path does not exist:
 ./modules`); a clone is only attempted when the value is not an absolute filesystem path
 and parses as a remote git URL (`https://`, `http://`, `ssh://`, `git://`, or the
 `user@host:path` form).
+
+### Known Limitation: Very Deep Expressions
+
+One input class escapes the "a document is always produced" rule above. A `.nix` file
+containing an extremely long *operator or application chain* aborts the process with a
+stack overflow rather than degrading to zero options:
+
+- `a // b // c // …`
+- `1 + 1 + 1 + …`
+- `f x x x …`
+
+These are the constructs [rnix](https://github.com/nix-community/rnix-parser) parses
+without its own depth limit, so they build a syntax tree whose depth grows with the
+chain. Building that tree and freeing it again both recurse once per level *inside the
+parser library*, so no guard in this tool can intercept it — the overflow happens either
+during the parse call or when its result is dropped, never in code this project
+controls. The process aborts (`fatal runtime error: stack overflow`; shells report exit
+status 134 on Unix), no document is written, and an existing `--out` file is left
+untouched.
+
+Measured on Linux x86_64:
+
+| Build | Threshold |
+|---|---|
+| debug (`cargo build`, `cargo test`) | ~6,000 chained terms — a ~24 KB file |
+| release (`cargo build --release`, and the published binaries) | ~32,000–40,000 terms — a ~160 KB file |
+
+Whenever there is more than one `.nix` file to process, parsing runs on worker threads
+with 2 MiB stacks, which is what sets those figures; a single-file run parses on the
+main thread and tolerates roughly three times more. The limit scales with the available
+stack, so it can be pushed further but never removed.
+
+Ordinary nesting is **not** affected: a deeply nested attrset (`{ n = { n = … }; }`) is
+rejected by rnix's own recursion limit and by this tool's traversal cap, and degrades to
+zero options exactly as described above. Real-world Nix does not come close to these
+depths — this only matters for hostile or machine-generated input, which is worth
+knowing because `--path` accepts an arbitrary remote repository. It is a limitation of
+the upstream parser (rowan's recursive green-tree destructor and its hash-consing, plus
+rnix's right-associative operator parsing), not a cap this tool can choose; see
+[#67](https://github.com/calebstewart/nix-options-doc/issues/67).
 
 ## Output Examples
 

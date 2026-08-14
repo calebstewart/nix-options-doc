@@ -119,6 +119,18 @@ pub(crate) const MAX_SUBMODULE_EXPANSION_BYTES: usize = 8 * 1024 * 1024;
 /// pathological, so - per this crate's graceful-degradation convention -
 /// the walk stops with a `log::warn!` and keeps whatever it already found,
 /// rather than aborting the process.
+///
+/// This cap bounds *this crate's* walks only; it does not make deep input
+/// safe. `rnix::Root::parse` has already built - and will later drop - the
+/// tree before any walk here runs, and `rowan` recurses once per level in
+/// both its green-tree destructor and the hash-consing it performs during
+/// the parse itself. So a file with a very long operator or application
+/// chain (`a // b // c ...`, `1 + 1 + 1 ...`, `f x x x ...`), which rnix
+/// parses without applying its own depth limit, still aborts the process:
+/// measured at ~6,000 terms on a 2 MiB debug worker stack and
+/// ~32,000-40,000 in release. That is an accepted, documented limitation
+/// (nix-options-doc#67), not something to cap here - see the README's
+/// "Known Limitation: Very Deep Expressions".
 pub(crate) const MAX_TRAVERSAL_DEPTH: usize = 256;
 
 /// Formats a type expression node into a human-readable description.
