@@ -436,6 +436,7 @@ fn test_deprecated_options() -> Result<(), Box<dyn std::error::Error + Send + Sy
     (lib.mkRenamedOptionModule [ "services" "oldName" ] [ "services" "newName" ])
     (lib.mkRemovedOptionModule [ "services" "goneName" ] "Use services.newName instead.")
     (lib.mkRemovedOptionModule [ "services" "silentlyGone" ] "")
+    (lib.mkRenamedOptionModule [ "services" "tickName" ] [ "services" "new`tick" ])
   ];
 }
 "#;
@@ -464,6 +465,24 @@ fn test_deprecated_options() -> Result<(), Box<dyn std::error::Error + Send + Sy
         .as_deref()
         .unwrap()
         .contains("Use `services.newName` instead."));
+
+    // Regression guard for nix-options-doc#49 at the level of
+    // `parser::find_deprecations` alone (before filter_options gets a
+    // chance to touch it): a rename target containing a backtick must
+    // widen the shim description's code span delimiter to two backticks,
+    // rather than the fixed single backtick that would otherwise close
+    // the span early. `renamed_to` keeps holding the raw, unmodified
+    // target - the JSON contract is unaffected by this fix.
+    let ticked = options
+        .iter()
+        .find(|o| o.name == "options.services.tickName")
+        .expect("renamed option shim (backtick target) should be found");
+    assert_eq!(ticked.renamed_to.as_deref(), Some("services.new`tick"));
+    assert!(ticked
+        .description
+        .as_deref()
+        .unwrap()
+        .contains("Use ``services.new`tick`` instead."));
 
     let removed = options
         .iter()
@@ -1266,15 +1285,186 @@ fn test_submodule_fanout_is_bounded() -> Result<(), Box<dyn std::error::Error + 
     // The budget really was the thing that stopped it: the input is
     // genuinely pathological, not accidentally small.
     assert!(options.len() >= crate::types::MAX_SUBMODULE_EXPANSION_OPTIONS);
-    // The cap actually bounds the result, with slack for the bounded
-    // overshoot documented on the submodule-expansion arm in
-    // `src/parser.rs` (in-flight frames finish their own bodies' direct
-    // options after the budget is exhausted).
-    assert!(options.len() < crate::types::MAX_SUBMODULE_EXPANSION_OPTIONS + 1_000);
+    // The cap bounds the result, but not to a constant: once the budget is
+    // exhausted no *new* submodule body is expanded, yet every frame already
+    // in flight still emits its own body's remaining direct options as the
+    // recursion unwinds. The cycle guard makes each in-flight frame a
+    // distinct body, so the overshoot is bounded by the options declared in
+    // the file - depth x breadth, linear in file size (nix-options-doc#46;
+    // see the `budget.is_exhausted()` arm of `parse_attrset`). This input
+    // declares only 29 options, so its overshoot is necessarily tiny; that
+    // is a property of *this* input, not a guarantee. The general bound is
+    // exercised by `test_submodule_fanout_overshoot_is_bounded_by_file_size`.
+    let declared = content.matches("mkOption").count();
+    assert!(options.len() <= crate::types::MAX_SUBMODULE_EXPANSION_OPTIONS + declared);
 
     assert!(options
         .iter()
         .any(|o| o.name == "options.services.demo.root"));
+
+    Ok(())
+}
+
+/// The overshoot past `MAX_SUBMODULE_EXPANSION_OPTIONS` is depth x breadth,
+/// not a constant (nix-options-doc#46): when the budget trips, no new
+/// submodule body is expanded, but every already-in-flight frame still emits
+/// its own body's remaining direct options as the recursion unwinds. Each
+/// in-flight frame is a distinct body (the cycle guard in `parse_attrset`
+/// ensures that), so the overshoot is bounded by the options declared in the
+/// file - linear in file size.
+///
+/// `test_submodule_fanout_is_bounded` cannot show this: its input declares 29
+/// options, so its overshoot is 11 no matter what. This one pads every
+/// submodule body with plain options *after* the two options that drive the
+/// fan-out, so the unwind path has real work left to do - it emits 11,219
+/// options, an overshoot of 1,219. The assertion is the real invariant, so a
+/// regression that made the overshoot super-linear (re-expanding bodies after
+/// exhaustion, or resetting the budget per branch) fails here.
+#[test]
+fn test_submodule_fanout_overshoot_is_bounded_by_file_size(
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // Kept small on purpose: this input already runs ~1.6 s in a debug test
+    // binary, and the cost grows with both constants.
+    const DEPTH: usize = 12;
+    const BREADTH: usize = 100;
+
+    let temp_dir = TempDir::new()?;
+
+    let mut content = String::from("{ lib, ... }:\nlet\n");
+    content.push_str("  m0 = lib.types.submodule {\n    options = {\n");
+    for j in 0..BREADTH {
+        content.push_str(&format!(
+            "      p{j} = lib.mkOption {{ type = lib.types.str; description = \"p{j}\"; }};\n"
+        ));
+    }
+    content.push_str("    };\n  };\n");
+    for i in 1..=DEPTH {
+        let prev = i - 1;
+        content.push_str(&format!(
+            "  m{i} = lib.types.submodule {{\n    options = {{\n"
+        ));
+        for k in 0..2 {
+            content.push_str(&format!(
+                "      d{k} = lib.mkOption {{ type = m{prev}; description = \"d{k}\"; }};\n"
+            ));
+        }
+        for j in 0..BREADTH {
+            content.push_str(&format!(
+                "      p{j} = lib.mkOption {{ type = lib.types.str; description = \"p{j}\"; }};\n"
+            ));
+        }
+        content.push_str("    };\n  };\n");
+    }
+    content.push_str(&format!(
+        "in\n{{\n  options.services.demo.root = lib.mkOption {{ type = m{DEPTH}; description = \"root\"; }};\n}}\n"
+    ));
+
+    create_test_file(temp_dir.path(), "padded_fanout.nix", &content)?;
+
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
+
+    // The budget really fired - the input is genuinely pathological.
+    assert!(options.len() >= crate::types::MAX_SUBMODULE_EXPANSION_OPTIONS);
+    // ...and the overshoot stays within the options the file declares.
+    let declared = content.matches("mkOption").count();
+    assert!(options.len() <= crate::types::MAX_SUBMODULE_EXPANSION_OPTIONS + declared);
+
+    Ok(())
+}
+
+/// The option cap alone bounds how many options a file may *emit*, not how
+/// much *work* the traversal does to emit them: a submodule body is re-walked
+/// on every expansion, and only the emitted options were charged
+/// (nix-options-doc#47). A body padded with attributes that never produce an
+/// option can therefore be re-walked thousands of times for free - total work
+/// is `O(option budget x body size)`, so a bigger body buys more runtime at
+/// the same option count. `MAX_SUBMODULE_EXPANSION_BYTES` charges each
+/// expansion the size of the body it re-walks, which caps that product.
+///
+/// Without the byte budget this input emits 10,011 options and takes ~19 s in
+/// a debug test binary; with it, 278 options in ~0.5 s.
+#[test]
+fn test_padded_submodule_body_expansion_is_work_bounded(
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let temp_dir = TempDir::new()?;
+
+    let mut content = String::from("{ lib, ... }:\nlet\n");
+    content.push_str(
+        "  m0 = lib.types.submodule {\n    options = {\n      leaf = lib.mkOption {\n        type = lib.types.str;\n        description = \"Leaf value.\";\n      };\n",
+    );
+    // Padding: plain attributes, not options - they cost traversal work on
+    // every re-walk of this body but never touch the option budget.
+    for j in 0..2_000 {
+        content.push_str(&format!("      pad{j} = \"junk value number {j}\";\n"));
+    }
+    content.push_str("    };\n  };\n");
+    for i in 1..=9 {
+        let prev = i - 1;
+        content.push_str(&format!(
+            "  m{i} = lib.types.submodule {{\n    options = {{\n      o0 = lib.mkOption {{ type = m{prev}; description = \"o0\"; }};\n      o1 = lib.mkOption {{ type = m{prev}; description = \"o1\"; }};\n      o2 = lib.mkOption {{ type = m{prev}; description = \"o2\"; }};\n    }};\n  }};\n"
+        ));
+    }
+    content.push_str(
+        "in\n{\n  options.services.demo.root = lib.mkOption {\n    type = m9;\n    description = \"Root option.\";\n  };\n}\n",
+    );
+
+    create_test_file(temp_dir.path(), "padded.nix", &content)?;
+
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
+
+    // The work budget stopped expansion long before the option budget could:
+    // without it this reaches MAX_SUBMODULE_EXPANSION_OPTIONS (10,000).
+    assert!(options.len() < 1_000);
+    // Graceful degradation: what was found is still emitted.
+    assert!(options
+        .iter()
+        .any(|o| o.name == "options.services.demo.root"));
+
+    Ok(())
+}
+
+/// Guards against the plausible wrong fix for nix-options-doc#47: a work
+/// budget set so low (or charged so eagerly) that ordinary modules get
+/// truncated. A large-but-realistic submodule body - one that is mostly
+/// non-option content, expanded a handful of times - must still expand in
+/// full, all the way to the deepest leaf.
+///
+/// For scale: the heaviest file in nixpkgs' `nixos/modules`
+/// (`services/networking/hostapd.nix`) re-walks ~94 KB of submodule bodies in
+/// total, and home-manager's heaviest (`services/syncthing.nix`) ~29 KB. This
+/// input re-walks ~1 MB, an order of magnitude more than either, and must
+/// still come through untruncated.
+#[test]
+fn test_moderately_padded_submodule_still_fully_expands(
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let temp_dir = TempDir::new()?;
+
+    let mut content = String::from("{ lib, ... }:\nlet\n");
+    content.push_str(
+        "  m0 = lib.types.submodule {\n    options = {\n      leaf = lib.mkOption {\n        type = lib.types.str;\n        description = \"Leaf value.\";\n      };\n",
+    );
+    for j in 0..3_000 {
+        content.push_str(&format!("      pad{j} = \"junk value number {j}\";\n"));
+    }
+    content.push_str("    };\n  };\n");
+    for i in 1..=3 {
+        let prev = i - 1;
+        content.push_str(&format!(
+            "  m{i} = lib.types.submodule {{\n    options = {{\n      o0 = lib.mkOption {{ type = m{prev}; description = \"o0\"; }};\n      o1 = lib.mkOption {{ type = m{prev}; description = \"o1\"; }};\n    }};\n  }};\n"
+        ));
+    }
+    content.push_str(
+        "in\n{\n  options.services.demo.root = lib.mkOption {\n    type = m3;\n    description = \"Root option.\";\n  };\n}\n",
+    );
+
+    create_test_file(temp_dir.path(), "moderate.nix", &content)?;
+
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
+
+    // Root + 14 intermediate options + 8 leaves, nothing truncated.
+    let deepest = format!("options.services.demo.root{}.leaf", ".o1".repeat(3));
+    assert!(options.iter().any(|o| o.name == deepest));
+    assert_eq!(options.len(), 23);
 
     Ok(())
 }

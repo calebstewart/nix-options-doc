@@ -22,7 +22,9 @@ use std::collections::HashMap;
 /// how much total work an expansion does, because depth and breadth are
 /// independent: a wide-but-shallow tree stays far under this cap while
 /// still expanding combinatorially (nix-options-doc#21). That failure mode
-/// is bounded separately by [`MAX_SUBMODULE_EXPANSION_OPTIONS`].
+/// is bounded separately by [`MAX_SUBMODULE_EXPANSION_OPTIONS`] (how many
+/// options a file may emit) and [`MAX_SUBMODULE_EXPANSION_BYTES`] (how much
+/// body text it may re-walk to emit them).
 /// Real-world nesting is <10 deep.
 pub(crate) const MAX_SUBMODULE_DEPTH: usize = 32;
 
@@ -34,10 +36,27 @@ pub(crate) const MAX_SUBMODULE_DEPTH: usize = 32;
 /// each declaring options of the next one's type, expand into ~b^d nodes
 /// (nix-options-doc#21). Every expansion is triggered by an `mkOption`
 /// that has already pushed an `OptionDoc`, so counting emitted options
-/// bounds the number of options emitted per file. It does *not* bound
+/// bounds how much expansion a file can drive. It does *not* bound
 /// peak memory: per-option size (e.g. description length) is
 /// attacker-controlled and unbounded, so this cap alone doesn't stop a
 /// file from pairing a pathological fan-out with huge per-option payloads.
+/// It does *not* bound total work either - a submodule body is re-walked
+/// on every expansion and only the emitted options are charged, so a body
+/// padded with non-option attributes is re-walked for free
+/// (nix-options-doc#47); that half is bounded by
+/// [`MAX_SUBMODULE_EXPANSION_BYTES`].
+///
+/// The cap is a *stop-expanding* threshold, not a hard ceiling on the
+/// emitted count: it is checked when deciding whether to expand another
+/// submodule body, never when emitting an option. When it trips, every
+/// `parse_attrset` frame already in flight still emits its own body's
+/// remaining direct options as the recursion unwinds. Those frames are
+/// distinct bodies (the cycle guard in `parser::parse_attrset` guarantees
+/// it), so the overshoot is bounded by the options declared in the file -
+/// depth x breadth, linear in file size, not a constant
+/// (nix-options-doc#46). Measured worst case so far: a 696 KB file with 31
+/// bodies of 302 direct options each emits 18,991 options against this
+/// 10,000 cap, in ~1.1 s.
 ///
 /// The cap is deliberately far above anything real: the largest single
 /// file in nixpkgs' `nixos/modules` emits 181 options. Hitting this means
@@ -45,6 +64,33 @@ pub(crate) const MAX_SUBMODULE_DEPTH: usize = 32;
 /// convention - expansion stops with a `log::warn!` and the options found
 /// so far are still emitted, rather than erroring out.
 pub(crate) const MAX_SUBMODULE_EXPANSION_OPTIONS: usize = 10_000;
+
+/// Backstop cap on how much submodule body *source text* a single file may
+/// re-walk before the parser stops expanding submodule bodies.
+///
+/// [`MAX_SUBMODULE_EXPANSION_OPTIONS`] bounds what a file may *emit*, not
+/// the work done to emit it: a submodule body is re-traversed on every
+/// expansion, and only the emitted options are charged, so attributes in
+/// the body that never produce an option are re-walked for free. Total work
+/// is therefore `O(option budget x body size)`, not `O(option budget)`
+/// (nix-options-doc#47) - a 1.7 MB file whose one padded body fans out
+/// 3-wide x 10-deep took ~30 s while never exceeding the option cap.
+///
+/// Charging each expansion the source length of the body it re-walks caps
+/// that product. The length is an O(1) stand-in for node count (counting
+/// nodes would cost the very walk being measured) and over-counts slightly,
+/// since a nested body's bytes are also part of its parent's - deliberately
+/// conservative.
+///
+/// Like the option cap, this is far above anything real: the heaviest file
+/// in nixpkgs' `nixos/modules` (`services/networking/hostapd.nix`) re-walks
+/// ~94 KB in total, and home-manager's heaviest (`services/syncthing.nix`)
+/// ~29 KB, so this leaves ~90x headroom. It must also stay well above what
+/// this crate's own pathological fan-out tests legitimately spend (~1 MB for
+/// `test_submodule_fanout_is_bounded`, whose whole point is to reach the
+/// option cap). Hitting it stops expansion with a `log::warn!` and keeps the
+/// options found so far, per this crate's graceful-degradation convention.
+pub(crate) const MAX_SUBMODULE_EXPANSION_BYTES: usize = 8 * 1024 * 1024;
 
 /// Formats a type expression node into a human-readable description.
 pub fn format_type(node: &SyntaxNode, aliases: &HashMap<String, String>) -> String {

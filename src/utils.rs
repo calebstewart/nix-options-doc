@@ -174,6 +174,85 @@ fn decoded_form_is_dangerous(literal: &str, decoded: &str) -> bool {
     !already_present_literally
 }
 
+/// Length of the longest run of consecutive backticks in `content`.
+///
+/// # Arguments
+/// - `content`: The text to scan.
+///
+/// # Returns
+/// The number of backticks in the longest consecutive run, or `0` if `content` has none.
+/// Used to size code-span/code-block fences long enough that they cannot be closed early
+/// by a shorter run of backticks already present in the content.
+pub(crate) fn longest_backtick_run(content: &str) -> usize {
+    let mut longest = 0usize;
+    let mut current = 0usize;
+    for c in content.chars() {
+        if c == '`' {
+            current += 1;
+            longest = longest.max(current);
+        } else {
+            current = 0;
+        }
+    }
+    longest
+}
+
+/// Renders `content` as a `CommonMark` inline code span that survives arbitrary input.
+///
+/// # Arguments
+/// - `content`: Third-party-controlled text (a Nix type, default, example, or condition)
+///   to render as an inline code span.
+///
+/// # Returns
+/// A backtick-delimited (or longer-delimited) span. Per `CommonMark` §6, backslash escapes do
+/// not work inside code spans, so the only correct way to embed a backtick is a delimiter
+/// run one backtick longer than the longest run already present in the content, padded
+/// with a single space on each side when needed to avoid the content's own backticks (or
+/// an all-whitespace body) fusing with the delimiter.
+///
+/// Lives here rather than in `generate::markdown` because it is shared by the Markdown
+/// generator, `parser::find_deprecations` (which writes a rename shim's description) and
+/// `filter_options` (which rewrites that same span into a link) - the latter two must produce
+/// byte-identical spans for the rewrite to match, which is only guaranteed if both call this
+/// one function. Same reasoning as `anchor_slug` above.
+pub(crate) fn inline_code(content: &str) -> String {
+    // A code span cannot contain a line break at all; the only caller that can hit this
+    // is the condition field, which carries raw Nix source (possibly a multi-line `mkIf`
+    // predicate) straight from `parser::format_condition`. Guard behind the `contains`
+    // check so every other value passes through byte for byte and existing output is
+    // unchanged.
+    let normalized;
+    let body: &str = if content.contains(['\n', '\r']) {
+        normalized = content.split_whitespace().collect::<Vec<_>>().join(" ");
+        &normalized
+    } else {
+        content
+    };
+
+    // An empty code span isn't expressible in CommonMark - `` renders as literal
+    // backticks, not an empty <code>. Substitute a single space instead.
+    if body.is_empty() {
+        return "` `".to_string();
+    }
+
+    let fence = "`".repeat(longest_backtick_run(body) + 1);
+
+    // Padding stops the content's own leading/trailing backtick from fusing with the
+    // delimiter run, and preserves a leading+trailing space that CommonMark's
+    // "strip one space from each end" rule would otherwise silently eat. That stripping
+    // rule doesn't apply to all-space content, so an all-space body must NOT be padded
+    // (padding it would add two spurious spaces).
+    let needs_padding = body.starts_with('`')
+        || body.ends_with('`')
+        || (body.starts_with(' ') && body.ends_with(' ') && body.chars().any(|c| c != ' '));
+
+    if needs_padding {
+        format!("{fence} {body} {fence}")
+    } else {
+        format!("{fence}{body}{fence}")
+    }
+}
+
 /// Reports whether `target` begins with a URI scheme other than a real
 /// `http://`/`https://` authority - i.e. whether it is dangerous to use
 /// as a link target rather than an ordinary relative/absolute path.

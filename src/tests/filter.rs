@@ -500,3 +500,160 @@ fn test_strip_prefix_trailing_dot_applies_to_renamed_anchor(
 
     Ok(())
 }
+
+/// Regression test for nix-options-doc#49: a `mkRenamedOptionModule` target
+/// that itself contains a backtick used to terminate the description's
+/// fixed single-backtick code span early, spilling the rest of the target
+/// and the link syntax into the document as literal text. This guards both
+/// the bug itself and the most likely wrong fix (patching only one of the
+/// two coupled sites, `parser::find_deprecations` and `filter_options`),
+/// which would leave `replacen` unable to find a match and the span
+/// unlinked.
+#[test]
+fn test_renamed_option_link_survives_backtick_in_target(
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let temp_dir = TempDir::new()?;
+    create_test_file(
+        temp_dir.path(),
+        "deprecations.nix",
+        r#"
+{ lib, ... }:
+{
+  imports = [
+    (lib.mkRenamedOptionModule [ "services" "old" ] [ "services" "new`tick" ])
+    (lib.mkRenamedOptionModule [ "services" "plain" ] [ "services" "newName" ])
+  ];
+}
+"#,
+    )?;
+
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
+    let filtered = filter_options(&options, &Cli::parse_from(["program"]));
+
+    let ticked = filtered
+        .iter()
+        .find(|o| o.name == "options.services.old")
+        .expect("renamed option shim (backtick target) should be found");
+    let ticked_description = ticked
+        .description
+        .as_deref()
+        .expect("shim description should be present");
+    assert!(
+        ticked_description.contains("[``services.new`tick``](#options-services-new-tick)"),
+        "expected a resolved, doubled-delimiter link, got: {ticked_description}"
+    );
+    assert!(
+        !ticked_description.contains("[`services.new`tick`]"),
+        "description still contains the broken (early-closed) span: {ticked_description}"
+    );
+    assert!(
+        ticked_description.contains("](#"),
+        "description lost its resolved link entirely - a partial fix would leave `replacen` \
+         unable to find a match: {ticked_description}"
+    );
+
+    // The no-backtick case must be byte-for-byte unchanged - no gratuitous
+    // delimiter doubling for the overwhelmingly common case.
+    let plain = filtered
+        .iter()
+        .find(|o| o.name == "options.services.plain")
+        .expect("renamed option shim (plain target) should be found");
+    assert!(
+        plain
+            .description
+            .as_deref()
+            .unwrap()
+            .contains("[`services.newName`](#options-services-newName)"),
+        "no-backtick target changed shape: {:?}",
+        plain.description
+    );
+
+    // Render through comrak, the same way generate.rs's Markdown suite
+    // does, as the strongest guard against a syntactically plausible but
+    // still-wrong delimiter choice.
+    let html = comrak::markdown_to_html(ticked_description, &comrak::Options::default());
+    assert!(
+        html.contains("<code>services.new`tick</code>"),
+        "rendered HTML did not contain the expected code span: {html}"
+    );
+    assert!(
+        !html.contains("</code>tick"),
+        "rendered HTML shows the code span closing early: {html}"
+    );
+
+    Ok(())
+}
+
+/// Companion to the backtick regression test above: guards against a
+/// hand-rolled "wrong fix" that escapes backticks manually instead of
+/// routing both sides through `inline_code`, which would leave a newline
+/// or a bracket in the rename target broken (a raw newline inside a code
+/// span, or bracket text that isn't actually protected from the
+/// surrounding link syntax).
+#[test]
+fn test_renamed_option_link_survives_newline_and_bracket_in_target(
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let temp_dir = TempDir::new()?;
+    create_test_file(
+        temp_dir.path(),
+        "deprecations.nix",
+        r#"
+{ lib, ... }:
+{
+  imports = [
+    (lib.mkRenamedOptionModule [ "services" "b1" ] [ "services" "line\nbreak" ])
+    (lib.mkRenamedOptionModule [ "services" "b2" ] [ "services" "br]acket" ])
+  ];
+}
+"#,
+    )?;
+
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
+
+    let newline_target = options
+        .iter()
+        .find(|o| o.name == "options.services.b1")
+        .expect("b1 shim should be found");
+    assert_eq!(
+        newline_target.renamed_to.as_deref(),
+        Some("services.line\nbreak"),
+        "renamed_to must keep holding the raw, unmodified target - only the rendered \
+         description collapses whitespace"
+    );
+
+    let filtered = filter_options(&options, &Cli::parse_from(["program"]));
+
+    let b1 = filtered
+        .iter()
+        .find(|o| o.name == "options.services.b1")
+        .expect("b1 shim should be found after filtering");
+    let b1_description = b1
+        .description
+        .as_deref()
+        .expect("b1 description should be present");
+    assert!(
+        b1_description.contains("[`services.line break`](#"),
+        "expected whitespace-collapsed link text, got: {b1_description}"
+    );
+    assert!(
+        !b1_description.contains("Use `services.line\nbreak`")
+            && !b1_description.contains("Use [`services.line\nbreak`"),
+        "description still contains a raw newline inside the code span: {b1_description:?}"
+    );
+
+    let b2 = filtered
+        .iter()
+        .find(|o| o.name == "options.services.b2")
+        .expect("b2 shim should be found after filtering");
+    let b2_description = b2
+        .description
+        .as_deref()
+        .expect("b2 description should be present");
+    let html = comrak::markdown_to_html(b2_description, &comrak::Options::default());
+    assert!(
+        html.contains("<code>services.br]acket</code>"),
+        "rendered HTML did not protect the bracket inside the code span: {html}"
+    );
+
+    Ok(())
+}
