@@ -884,10 +884,17 @@ pub fn find_deprecations(
                         // stale the moment --strip-prefix is used.
                         // renamed_to carries the bare target path for
                         // filter_options to resolve once that's known.
+                        // The span is built with `inline_code` rather than a hard-coded
+                        // pair of backticks because `new_path` is arbitrary text from the
+                        // module author's Nix source and may contain a backtick (issue
+                        // #49). `filter_options` re-finds this exact span to turn it into
+                        // a link, so it must call `inline_code` on the same string - see
+                        // `crate::filter_options`.
                         let mut option = deprecation_option_doc(
                             &format!("options.{old_path}"),
                             format!(
-                                "> [!WARNING]\n> This option was renamed. Use `{new_path}` instead."
+                                "> [!WARNING]\n> This option was renamed. Use {} instead.",
+                                crate::utils::inline_code(&new_path)
                             ),
                             "renamed option",
                             file_path,
