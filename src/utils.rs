@@ -480,6 +480,14 @@ pub fn should_process_file(entry: &walkdir::DirEntry, exclude_paths: &[PathBuf])
 
 /// Process a single Nix file to extract option documentation.
 ///
+/// An unreadable or unparseable file degrades to zero options rather than
+/// failing the run. The one exception is outside this crate's control: a
+/// file holding an extremely long operator or application chain
+/// (`a // b // c ...`, `1 + 1 + 1 ...`, `f x x x ...`) overflows the stack
+/// inside the `rnix::Root::parse` call below, or when the tree it returns
+/// is dropped, and aborts the process. See nix-options-doc#67 and the
+/// README's "Known Limitation: Very Deep Expressions".
+///
 /// # Arguments
 /// - `file_path`: Path to the Nix file to process.
 /// - `dir`: The base directory for calculating relative paths.
