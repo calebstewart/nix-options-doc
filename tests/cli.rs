@@ -340,6 +340,28 @@ fn unreadable_subdirectory_is_skipped_not_fatal() {
     );
 }
 
+/// nix-options-doc#42: `--follow-symlinks` can reach into hidden directories
+/// through a non-hidden link, which is specified behavior rather than a leak.
+/// The only mitigation shipped is that the flag says so, so the caveat living
+/// in `--help` is the fix itself and is pinned here. Long help is only
+/// reachable from the process (`--help`, not `-h`), which is why this is an
+/// integration test rather than a unit test.
+#[test]
+fn follow_symlinks_help_documents_hidden_directory_reach() {
+    let output = Command::new(bin())
+        .arg("--help")
+        .output()
+        .expect("failed to run nix-options-doc --help");
+    assert!(output.status.success(), "--help should exit 0");
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    let flattened = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        flattened.contains("Hidden-directory pruning applies to the tree being walked"),
+        "--help should explain that pruning does not follow link targets, got: {text}"
+    );
+}
+
 /// Regression test for #3: crate metadata feeds clap's `--version`/`--help`
 /// via `#[command(author, version, about)]`. clap 4 does not render `author`
 /// in help output, so fixing the manifest is expected to leave this output

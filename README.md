@@ -154,7 +154,7 @@ Options:
       --replace <KEY=VALUE>        Replace variables in Nix modules (can be used multiple times)
       --strip-prefix [<PREFIX>]    Remove a prefix from option names; a bare prefix means options.<PREFIX> [without a value: options.]
   -e, --exclude-dir <EXCLUDE_DIR>  Directories to exclude from processing
-      --follow-symlinks            Enable traversing through symbolic links
+      --follow-symlinks            Enable traversing through symbolic links (can reach hidden directories; see the note below)
       --progress                   Show progress bar
   -h, --help                       Print help
   -V, --version                    Print version
@@ -163,6 +163,17 @@ Options:
 **Note:** hidden files and directories (names starting with `.`, such as
 `.git`, `.direnv`, `.cache`) are skipped during traversal. The path you pass
 to `--path` is exempt, so `--path ./.config/nixos` still works.
+
+This pruning is by name, and it applies to the tree being walked rather than
+to the targets that symbolic links resolve to. With `--follow-symlinks`, a
+link whose own name is not hidden is followed even when it points into a
+hidden directory, and the options behind it are documented — that applies
+both to a link to a directory and to a link to a single `.nix` file. This is
+deliberate: passing the flag is consent to leave the visible tree, and layouts
+that symlink out to a hidden source directory (dotfiles/stow-style trees) rely
+on it. The practical consequence is that scanning an untrusted tree with
+`--follow-symlinks` can read files the visible tree does not appear to expose.
+Use `--exclude-dir` to skip a link you do not want followed.
 
 ### Shell Completions
 

@@ -349,6 +349,17 @@ fn is_hidden(entry: &walkdir::DirEntry) -> bool {
 /// test. Rejecting the root would make those invocations silently produce
 /// zero options.
 ///
+/// The check is name-based on purpose, and only ever sees the entry's own
+/// name: a `DirEntry` for a symlink reports the *link's* name, never the
+/// target's. So under `--follow-symlinks` a non-hidden link into a hidden
+/// directory is traversed, and the same goes for a non-hidden link to a
+/// single `.nix` file inside one in `should_process_file`. That is the
+/// specified behavior of the flag (nix-options-doc#42) - passing it is
+/// consent to leave the visible tree, and pruning by *resolved* path would
+/// silently drop options for trees that symlink out to a hidden source
+/// directory. Do not "fix" this without changing the documented contract in
+/// the `--follow-symlinks` help text and the README first.
+///
 /// # Arguments
 /// - `entry`: The directory entry to test.
 ///
