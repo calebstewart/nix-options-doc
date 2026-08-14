@@ -353,10 +353,30 @@ fn test_sanitize_link_target_decodes_entity_references() {
 /// destination into an `href` without re-escaping `&` hands the browser's
 /// HTML parser exactly this second decode pass, so `has_dangerous_scheme`
 /// (`src/utils.rs`) must decode to a fixed point rather than once.
+///
+/// The numeric-payload assertion above is *not* discriminating on its own
+/// (nix-options-doc#48 review round 3, finding 1): `&amp;#106;avascript:`
+/// decodes on its very first pass to `&#106;avascript:`, which contains the
+/// literal `&#` shape that `has_dangerous_scheme` rejects outright as a
+/// semicolon-less-numeric-reference guard (`src/utils.rs`'s `target.contains("&#")`
+/// / `decoded.contains("&#")` checks) - so it is caught whether or not the
+/// decode loop actually iterates to a fixed point. A double-encoded *named*
+/// reference has no such escape hatch: `javascript&amp;colon;alert(1)`'s
+/// first decode pass yields `javascript&colon;alert(1)`, which contains no
+/// `&#` anywhere and has no live scheme yet (the colon itself is still
+/// entity-encoded), so a single-pass implementation would find nothing
+/// dangerous and let it straight through. Only a second pass - decoding
+/// `&colon;` to `:` - produces the live `javascript:` scheme that
+/// `decoded_form_is_dangerous` rejects. This assertion is what actually
+/// forces the loop to run more than once.
 #[test]
 fn test_sanitize_link_target_decodes_to_a_fixed_point() {
     assert_eq!(
         crate::utils::sanitize_link_target("&amp;#106;avascript:alert(1)"),
+        "#"
+    );
+    assert_eq!(
+        crate::utils::sanitize_link_target("javascript&amp;colon;alert(1)"),
         "#"
     );
 }
