@@ -984,8 +984,7 @@ fn test_markdown_link_text_and_name_with_backtick(
 /// `example`), since each is routed through its own `nix_code_block`
 /// call and a per-hunk revert of any one of them must be caught.
 #[test]
-fn test_markdown_code_block_fence_grows() -> Result<(), Box<dyn std::error::Error + Send + Sync>>
-{
+fn test_markdown_code_block_fence_grows() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let type_with_fence =
         "a very long type description well past the seventy-two character wrap threshold\n```\nnested fence\n```"
             .to_string();
