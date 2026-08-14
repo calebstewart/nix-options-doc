@@ -1742,3 +1742,181 @@ fn test_enable_option_fallback_empty_leaf_has_no_code_span(
 
     Ok(())
 }
+
+/// Guards the *blast radius* of the `LineIndex` refactor (nix-options-doc#55):
+/// `get_line_number` used to rescan the file from byte 0 on every emitted
+/// option, which is `O(file_size x options)`. The rewrite computes line
+/// starts once and binary-searches them, and this test pins the numbers that
+/// scan produced so a wrong refactor (off-by-one boundary, char vs. byte
+/// offsets, or a dropped call site) is caught. It covers all four emission
+/// arms that call `get_line_number`: `mkOption` (`options.a`, `options.b`),
+/// `mkEnableOption` (`options.c.enable`), and `find_deprecations`
+/// (`options.old.one`).
+#[test]
+fn test_declaration_line_numbers_match_source(
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let temp_dir = TempDir::new()?;
+    let content = r#"{ lib, ... }:
+{
+  # café ☕ — multi-byte comment text before every option below
+  options.a = lib.mkOption { type = lib.types.str; description = "a"; };
+  options.b =
+lib.mkOption { type = lib.types.str; description = "b"; };
+  options.c.enable = lib.mkEnableOption "c";
+  imports = [
+    (lib.mkRenamedOptionModule [ "old" "one" ] [ "new" "one" ])
+  ];
+}
+"#;
+    create_test_file(temp_dir.path(), "flake.nix", content)?;
+
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
+
+    let line_of = |name: &str| {
+        options
+            .iter()
+            .find(|o| o.name == name)
+            .unwrap_or_else(|| panic!("option {name} not found"))
+            .declarations[0]
+            .line_number
+    };
+
+    // Ordinary case; the line-3 multi-byte comment must not shift the count.
+    assert_eq!(line_of("options.a"), 4);
+    // The node starts exactly at a line start (column 0) - the boundary
+    // that an off-by-one `partition_point` comparison would miss.
+    assert_eq!(line_of("options.b"), 6);
+    // A different emission arm (`mkEnableOption`).
+    assert_eq!(line_of("options.c.enable"), 7);
+    // The `find_deprecations` path, a separate call site entirely.
+    assert_eq!(line_of("options.old.one"), 9);
+
+    Ok(())
+}
+
+/// Guards the `+1` / empty-table boundary of `LineIndex`: an implementation
+/// that builds `line_starts` without the leading `0`, or that returns
+/// `partition_point(...)` minus one, reports line 0 for a single-line file.
+#[test]
+fn test_line_number_is_one_for_a_single_line_module(
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let temp_dir = TempDir::new()?;
+    let content = r#"{ options.a = lib.mkOption { type = lib.types.str; description = "a"; }; }"#;
+    create_test_file(temp_dir.path(), "flake.nix", content)?;
+
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
+
+    assert_eq!(options.len(), 1);
+    assert_eq!(options[0].declarations[0].line_number, 1);
+
+    Ok(())
+}
+
+/// Guards against building `LineIndex` from `str::lines()`, which strips
+/// `\r` from `\r\n` and desynchronises every subsequent offset on a CRLF
+/// file. Same source as `test_declaration_line_numbers_match_source`, just
+/// with `\r\n` line endings, and the same four line numbers must come out.
+#[test]
+fn test_line_numbers_are_unaffected_by_crlf_line_endings(
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let temp_dir = TempDir::new()?;
+    let content = r#"{ lib, ... }:
+{
+  # café ☕ — multi-byte comment text before every option below
+  options.a = lib.mkOption { type = lib.types.str; description = "a"; };
+  options.b =
+lib.mkOption { type = lib.types.str; description = "b"; };
+  options.c.enable = lib.mkEnableOption "c";
+  imports = [
+    (lib.mkRenamedOptionModule [ "old" "one" ] [ "new" "one" ])
+  ];
+}
+"#;
+    create_test_file(temp_dir.path(), "crlf.nix", &content.replace('\n', "\r\n"))?;
+
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
+
+    let line_of = |name: &str| {
+        options
+            .iter()
+            .find(|o| o.name == name)
+            .unwrap_or_else(|| panic!("option {name} not found"))
+            .declarations[0]
+            .line_number
+    };
+
+    assert_eq!(line_of("options.a"), 4);
+    assert_eq!(line_of("options.b"), 6);
+    assert_eq!(line_of("options.c.enable"), 7);
+    assert_eq!(line_of("options.old.one"), 9);
+
+    Ok(())
+}
+
+/// Structural check that the old and new implementations agree at scale, on
+/// a file large enough that only the fixed version would finish quickly (the
+/// old `O(file_size x options)` scan would take minutes on this many options
+/// in a debug binary - see the "kept small on purpose" comment on
+/// `test_submodule_fanout_overshoot_is_bounded_by_file_size` for the same
+/// reasoning). 2,000 options at a fixed 5 lines each keeps every option's
+/// expected line number an arithmetic function of its index, and keeps the
+/// whole file at ~10,000 lines, well within debug-binary wall-clock noise
+/// once the fix is applied.
+#[test]
+fn test_line_numbers_survive_a_large_file() -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+{
+    const COUNT: usize = 2000;
+    const LINES_PER_OPTION: usize = 5;
+
+    let temp_dir = TempDir::new()?;
+
+    let mut content = String::from("{ lib, ... }:\n{\n  options = {\n");
+    // Three header lines precede the first option block.
+    const HEADER_LINES: usize = 3;
+    for i in 0..COUNT {
+        content.push_str(&format!(
+            "    opt{i:06} = lib.mkOption {{\n      type = lib.types.str;\n      default = \"value{i}\";\n      description = \"Option number {i}.\";\n    }};\n"
+        ));
+    }
+    content.push_str("  };\n}\n");
+
+    create_test_file(temp_dir.path(), "big.nix", &content)?;
+
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
+    assert_eq!(options.len(), COUNT);
+
+    for i in 0..COUNT {
+        let name = format!("options.opt{i:06}");
+        let option = options
+            .iter()
+            .find(|o| o.name == name)
+            .unwrap_or_else(|| panic!("option {name} not found"));
+        let expected = HEADER_LINES + 1 + i * LINES_PER_OPTION;
+        assert_eq!(
+            option.declarations[0].line_number, expected,
+            "wrong line number for {name}"
+        );
+    }
+
+    Ok(())
+}
+
+/// Pins the `line_starts[0] == 0` invariant from the other side of
+/// `test_line_number_is_one_for_a_single_line_module`: a file whose very
+/// first byte is a newline must still report line 1 for content on line 1
+/// (there is none) and line 2 for the option that follows it.
+#[test]
+fn test_line_number_for_option_after_a_blank_first_line(
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let temp_dir = TempDir::new()?;
+    let content =
+        "\n{ options.a = lib.mkOption { type = lib.types.str; description = \"a\"; }; }\n";
+    create_test_file(temp_dir.path(), "flake.nix", content)?;
+
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
+
+    assert_eq!(options.len(), 1);
+    assert_eq!(options[0].declarations[0].line_number, 2);
+
+    Ok(())
+}

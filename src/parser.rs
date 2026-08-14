@@ -138,7 +138,7 @@ impl ExpansionBudget {
 /// - `file_path`: The relative file path of the Nix file for documentation reference.
 /// - `prefix`: The current option name prefix in the hierarchy.
 /// - `replacements`: A map of variable replacements for dynamic segments.
-/// - `source_text`: The full text of the source file for line number calculation.
+/// - `line_index`: Precomputed line-start offsets for the file, used to turn a node's byte offset into a line number (see [`LineIndex`]).
 /// - `aliases`: Local function aliases (see [`crate::nix_call::collect_aliases`]).
 /// - `let_bindings`: Local `let`-bound expressions (see
 ///   [`crate::nix_call::collect_let_bindings`]).
@@ -162,7 +162,7 @@ pub fn visit_node(
     file_path: &str,
     prefix: &str,
     replacements: &HashMap<String, String>,
-    source_text: &str,
+    line_index: &LineIndex,
     aliases: &HashMap<String, String>,
     let_bindings: &HashMap<String, SyntaxNode>,
     condition: Option<&str>,
@@ -196,7 +196,7 @@ pub fn visit_node(
                     file_path,
                     &new_prefix,
                     replacements,
-                    source_text,
+                    line_index,
                     aliases,
                     let_bindings,
                     condition,
@@ -219,7 +219,7 @@ pub fn visit_node(
             file_path,
             prefix,
             replacements,
-            source_text,
+            line_index,
             aliases,
             let_bindings,
             Some(&new_condition),
@@ -236,7 +236,7 @@ pub fn visit_node(
                 file_path,
                 prefix,
                 replacements,
-                source_text,
+                line_index,
                 aliases,
                 let_bindings,
                 condition,
@@ -285,17 +285,57 @@ fn parse_attrpath(node: &SyntaxNode, replacements: &HashMap<String, String>) -> 
         .join(".")
 }
 
+/// Byte offsets of the start of every line in one file's source text, so a
+/// node's line number is a binary search instead of a rescan.
+///
+/// Built once per file in [`crate::utils::process_nix_file`] and shared by
+/// the whole traversal of that file. Computing it per lookup instead would
+/// reintroduce exactly the cost this exists to remove (nix-options-doc#55):
+/// `get_line_number` is called once per emitted `OptionDoc`, and the previous
+/// scan-from-the-start implementation made a large file cost
+/// `O(file_size x options)` - 42 s for a 7.5 MB module, against 0.4 s here.
+pub struct LineIndex {
+    /// Ascending byte offsets, one per line, always starting with `0`.
+    line_starts: Vec<usize>,
+}
+
+impl LineIndex {
+    /// Builds the index for one file's source text.
+    ///
+    /// # Arguments
+    /// - `source_text`: The full text of the file.
+    ///
+    /// # Returns
+    /// A `LineIndex` covering `source_text`.
+    pub fn new(source_text: &str) -> Self {
+        let mut line_starts = vec![0];
+        line_starts.extend(
+            source_text
+                .bytes()
+                .enumerate()
+                .filter(|&(_, byte)| byte == b'\n')
+                .map(|(offset, _)| offset + 1),
+        );
+        Self { line_starts }
+    }
+
+    /// Returns the 1-based line number containing `offset`.
+    ///
+    /// # Arguments
+    /// - `offset`: A byte offset into the source text this index was built from.
+    ///
+    /// # Returns
+    /// The 1-based line number.
+    fn line_number(&self, offset: usize) -> usize {
+        // Number of line starts at or before `offset` == that offset's
+        // 1-based line: `line_starts[0]` is 0, so the count is never 0.
+        self.line_starts.partition_point(|&start| start <= offset)
+    }
+}
+
 /// Determines the 1-based line number where a syntax node starts in the source file.
-fn get_line_number(node: &SyntaxNode, source_text: &str) -> usize {
-    let text_range = node.text_range();
-    let start_offset: usize = text_range.start().into();
-
-    let line_count = source_text[..start_offset]
-        .chars()
-        .filter(|&c| c == '\n')
-        .count();
-
-    line_count + 1
+fn get_line_number(node: &SyntaxNode, line_index: &LineIndex) -> usize {
+    line_index.line_number(node.text_range().start().into())
 }
 
 /// Clean and format a description string for documentation.
@@ -449,7 +489,7 @@ fn scan_option_overrides(
 /// - `file_path`: The file path of the Nix file for reference.
 /// - `current_prefix`: The current option name hierarchy as a dot-separated string.
 /// - `replacements`: A map of variable replacements for dynamic values.
-/// - `source_text`: The source text of the file for line number calculation.
+/// - `line_index`: Precomputed line-start offsets for the file, used to turn a node's byte offset into a line number (see [`LineIndex`]).
 /// - `aliases`: Local function aliases (see [`crate::nix_call::collect_aliases`]).
 /// - `let_bindings`: Local `let`-bound expressions (see
 ///   [`crate::nix_call::collect_let_bindings`]).
@@ -478,7 +518,7 @@ fn parse_attrset(
     file_path: &str,
     current_prefix: &str,
     replacements: &HashMap<String, String>,
-    source_text: &str,
+    line_index: &LineIndex,
     aliases: &HashMap<String, String>,
     let_bindings: &HashMap<String, SyntaxNode>,
     condition: Option<&str>,
@@ -503,7 +543,7 @@ fn parse_attrset(
                     file_path,
                     current_prefix,
                     replacements,
-                    source_text,
+                    line_index,
                     aliases,
                     let_bindings,
                     condition,
@@ -534,7 +574,7 @@ fn parse_attrset(
                                 file_path,
                                 current_prefix,
                                 replacements,
-                                source_text,
+                                line_index,
                                 aliases,
                                 let_bindings,
                                 condition,
@@ -555,7 +595,7 @@ fn parse_attrset(
                             file_path,
                             current_prefix,
                             replacements,
-                            source_text,
+                            line_index,
                             aliases,
                             let_bindings,
                             Some(&new_condition),
@@ -609,7 +649,7 @@ fn parse_attrset(
                         renamed_to: None,
                         declarations: vec![Declaration {
                             file_path: file_path.to_string(),
-                            line_number: get_line_number(node, source_text),
+                            line_number: get_line_number(node, line_index),
                             description: None,
                             condition: condition.map(str::to_string),
                         }],
@@ -669,7 +709,7 @@ fn parse_attrset(
                         renamed_to: None,
                         declarations: vec![Declaration {
                             file_path: file_path.to_string(),
-                            line_number: get_line_number(node, source_text),
+                            line_number: get_line_number(node, line_index),
                             description: None,
                             condition: condition.map(str::to_string),
                         }],
@@ -744,7 +784,7 @@ fn parse_attrset(
                                         file_path,
                                         &nested_prefix,
                                         replacements,
-                                        source_text,
+                                        line_index,
                                         aliases,
                                         let_bindings,
                                         condition,
@@ -774,7 +814,7 @@ fn parse_attrset(
                                         renamed_to: None,
                                         declarations: vec![Declaration {
                                             file_path: file_path.to_string(),
-                                            line_number: get_line_number(node, source_text),
+                                            line_number: get_line_number(node, line_index),
                                             description: None,
                                             condition: condition.map(str::to_string),
                                         }],
@@ -843,7 +883,7 @@ fn parse_attrset(
                         renamed_to: None,
                         declarations: vec![Declaration {
                             file_path: file_path.to_string(),
-                            line_number: get_line_number(node, source_text),
+                            line_number: get_line_number(node, line_index),
                             description: None,
                             condition: condition.map(str::to_string),
                         }],
@@ -863,7 +903,7 @@ fn parse_attrset(
                     file_path,
                     current_prefix,
                     replacements,
-                    source_text,
+                    line_index,
                     aliases,
                     let_bindings,
                     condition,
@@ -884,7 +924,7 @@ fn parse_attrset(
                     file_path,
                     current_prefix,
                     replacements,
-                    source_text,
+                    line_index,
                     aliases,
                     let_bindings,
                     condition,
@@ -911,7 +951,7 @@ fn parse_attrset(
                             file_path,
                             current_prefix,
                             replacements,
-                            source_text,
+                            line_index,
                             aliases,
                             let_bindings,
                             condition,
@@ -977,10 +1017,10 @@ fn parse_attrset(
 pub fn find_deprecations(
     node: &SyntaxNode,
     file_path: &str,
-    source_text: &str,
+    line_index: &LineIndex,
     aliases: &HashMap<String, String>,
 ) -> Vec<OptionDoc> {
-    find_deprecations_inner(0, node, file_path, source_text, aliases)
+    find_deprecations_inner(0, node, file_path, line_index, aliases)
 }
 
 /// Inner worker for [`find_deprecations`], carrying the recursion depth
@@ -996,7 +1036,7 @@ fn find_deprecations_inner(
     depth: usize,
     node: &SyntaxNode,
     file_path: &str,
-    source_text: &str,
+    line_index: &LineIndex,
     aliases: &HashMap<String, String>,
 ) -> Vec<OptionDoc> {
     if depth >= types::MAX_TRAVERSAL_DEPTH {
@@ -1052,7 +1092,7 @@ fn find_deprecations_inner(
                             ),
                             "renamed option",
                             file_path,
-                            get_line_number(node, source_text),
+                            get_line_number(node, line_index),
                         );
                         option.renamed_to = Some(new_path);
                         found.push(option);
@@ -1082,7 +1122,7 @@ fn find_deprecations_inner(
                             format!("> [!WARNING]\n> This option has been removed.{detail}"),
                             "removed option",
                             file_path,
-                            get_line_number(node, source_text),
+                            get_line_number(node, line_index),
                         ));
                     }
                     return found;
@@ -1097,7 +1137,7 @@ fn find_deprecations_inner(
             depth + 1,
             &child,
             file_path,
-            source_text,
+            line_index,
             aliases,
         ));
     }

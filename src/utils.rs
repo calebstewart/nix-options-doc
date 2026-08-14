@@ -508,6 +508,7 @@ pub fn process_nix_file(
             };
 
             // Parse the file and get options
+            let line_index = parser::LineIndex::new(&content);
             let aliases = collect_aliases(&parse.syntax());
             let let_bindings = collect_let_bindings(&parse.syntax());
             let mut file_options = match parser::visit_node(
@@ -516,7 +517,7 @@ pub fn process_nix_file(
                 &relative_path,
                 "",
                 replacements,
-                &content,
+                &line_index,
                 &aliases,
                 &let_bindings,
                 None,
@@ -533,7 +534,7 @@ pub fn process_nix_file(
             file_options.extend(parser::find_deprecations(
                 &parse.syntax(),
                 &relative_path,
-                &content,
+                &line_index,
                 &aliases,
             ));
 
