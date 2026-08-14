@@ -13,9 +13,11 @@ use rnix::{SyntaxKind, SyntaxNode};
 use rowan::ast::AstNode;
 use std::collections::HashMap;
 
-/// Per-file accounting for how many options parsing has emitted so far,
-/// used to stop submodule expansion before it fans out combinatorially
-/// (nix-options-doc#21).
+/// Per-file accounting for how much submodule expansion parsing has done
+/// so far - both the options it has emitted and the body text it has
+/// re-walked - used to stop expansion before it fans out combinatorially
+/// (nix-options-doc#21) or spends unbounded time re-walking one padded body
+/// (nix-options-doc#47).
 ///
 /// This is a single mutable value threaded through the whole traversal of
 /// one file, *deliberately* unlike `submodule_stack` (which is copied per
@@ -32,6 +34,7 @@ use std::collections::HashMap;
 #[derive(Default)]
 pub struct ExpansionBudget {
     emitted: usize,
+    expanded_bytes: usize,
     warned: bool,
 }
 
@@ -46,22 +49,55 @@ impl ExpansionBudget {
         self.emitted += 1;
     }
 
-    /// Reports whether this file has emitted enough options that further
-    /// submodule expansion should stop.
+    /// Records that a submodule body of `len` source bytes is about to be
+    /// re-walked, charging that re-walk to this file's work budget.
+    ///
+    /// The body's source length is used as an O(1) stand-in for the number
+    /// of nodes the traversal is about to visit - counting them would cost
+    /// exactly the walk being measured.
+    fn record_expansion(&mut self, len: usize) {
+        self.expanded_bytes = self.expanded_bytes.saturating_add(len);
+    }
+
+    /// Reports whether this file has spent enough of either budget that
+    /// further submodule expansion should stop.
     fn is_exhausted(&self) -> bool {
+        self.options_exhausted() || self.work_exhausted()
+    }
+
+    /// Whether the emitted-option cap has been reached.
+    fn options_exhausted(&self) -> bool {
         self.emitted >= types::MAX_SUBMODULE_EXPANSION_OPTIONS
+    }
+
+    /// Whether the re-walked-bytes cap has been reached.
+    fn work_exhausted(&self) -> bool {
+        self.expanded_bytes >= types::MAX_SUBMODULE_EXPANSION_BYTES
     }
 
     /// Warns that expansion was truncated, at most once per file - the
     /// check fires on every subsequent expansion attempt, which on a
     /// pathological file is thousands of times.
     fn warn_once(&mut self, file_path: &str) {
-        if !self.warned {
-            self.warned = true;
+        if self.warned {
+            return;
+        }
+        self.warned = true;
+        // Name the budget that actually tripped: the two have very
+        // different causes (too many options vs. one oversized body
+        // re-walked too often), and a reader chasing truncated output
+        // needs to know which.
+        if self.options_exhausted() {
             log::warn!(
                 "{file_path}: stopped expanding submodule options after {} entries; \
                  output for this file is truncated",
                 types::MAX_SUBMODULE_EXPANSION_OPTIONS
+            );
+        } else {
+            log::warn!(
+                "{file_path}: stopped expanding submodules after re-walking {} bytes of \
+                 submodule bodies; output for this file is truncated",
+                types::MAX_SUBMODULE_EXPANSION_BYTES
             );
         }
     }
@@ -620,6 +656,15 @@ fn parse_attrset(
                                 // not a constant (nix-options-doc#46).
                                 budget.warn_once(file_path);
                             } else {
+                                // Charge the re-walk this expansion is about
+                                // to do, not just the options it produces:
+                                // the same body is re-traversed on every
+                                // expansion, so a body padded with
+                                // non-option attributes would otherwise be
+                                // re-walked for free (nix-options-doc#47).
+                                // Charging on entry (rather than on exit)
+                                // keeps the overshoot to one body.
+                                budget.record_expansion(usize::from(body_range.len()));
                                 let mut nested_stack = submodule_stack.to_vec();
                                 nested_stack.push(body_range);
 
