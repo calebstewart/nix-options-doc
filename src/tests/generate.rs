@@ -532,6 +532,89 @@ fn test_entity_encoded_scheme_in_declaration_path_is_neutralized(
     Ok(())
 }
 
+/// End-to-end regression for nix-options-doc#48 review round 2, findings 1
+/// and 2: a hostile directory name whose bytes are entity references rather
+/// than literal URL syntax can still reassemble an off-site link once
+/// `CommonMark` decodes the Markdown link destination - either a full
+/// `http://`/`https://` authority (`http&colon;&sol;&sol;` decodes to
+/// `http://`) or a scheme-less protocol-relative one (`&sol;&sol;` decodes
+/// to `//`). Both shapes are legal Unix path bytes and survive a `git
+/// clone`, so both are reachable from the same "scan an untrusted repo"
+/// threat model as the rest of nix-options-doc#48. HTML output was already
+/// inert for these payloads via `html_escape::encode_double_quoted_attribute`
+/// (every `&` in either payload is escaped to `&amp;` before it reaches an
+/// `href`), so the HTML assertions below guard a regression, not the
+/// original bug - Markdown is the vulnerable surface, same as the rest of
+/// nix-options-doc#48.
+///
+/// Built directly from `OptionDoc`/`Declaration` rather than through
+/// `collect_options` writing a file to disk, per this repo's convention for
+/// dangerous-payload tests (`&`/`:`/`;` are not guaranteed to survive every
+/// filesystem, and this repo's CI runs on Windows too).
+#[test]
+fn test_entity_encoded_off_site_authority_in_declaration_path_is_neutralized(
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let encoded_http_authority_payload =
+        "http&colon;&sol;&sol;github.com&commat;evil.example/x.nix".to_string();
+    let encoded_protocol_relative_payload =
+        "&sol;&sol;github.com&commat;evil.example/x.nix".to_string();
+
+    let options = vec![OptionDoc {
+        name: "options.test.evilAuthority".to_string(),
+        description: None,
+        nix_type: "boolean".to_string(),
+        default_value: Some("false".to_string()),
+        example: None,
+        renamed_to: None,
+        declarations: vec![
+            Declaration {
+                file_path: encoded_http_authority_payload.clone(),
+                line_number: 1,
+                description: None,
+                condition: None,
+            },
+            Declaration {
+                file_path: encoded_protocol_relative_payload.clone(),
+                line_number: 2,
+                description: None,
+                condition: None,
+            },
+        ],
+    }];
+
+    let markdown = generate_markdown(&options)?;
+    for payload in [
+        &encoded_http_authority_payload,
+        &encoded_protocol_relative_payload,
+    ] {
+        // The raw encoded payload must never appear as a link *destination*
+        // - the position `CommonMark` decodes entity references in, which is
+        // the actual vulnerability - though it legitimately still appears as
+        // plain backtick-quoted display text elsewhere in the document.
+        assert!(
+            !markdown.contains(&format!("(<{payload}")),
+            "raw encoded payload {payload:?} must not reach the generated Markdown as a link destination"
+        );
+    }
+    // Confirms the neutralized form was substituted in for both
+    // declarations, so the previous assertions cannot pass merely because
+    // the option vanished from the document entirely.
+    assert!(markdown.contains("](<#>)"));
+    assert!(markdown.matches("](<#>)").count() >= 2);
+
+    let html = generate_html(&options)?;
+    assert!(!html.to_lowercase().contains("href=\"http://"));
+    assert!(!html.contains("href=\"//"));
+    for payload in [
+        &encoded_http_authority_payload,
+        &encoded_protocol_relative_payload,
+    ] {
+        assert!(!html.contains(&format!("href=\"{payload}")));
+    }
+
+    Ok(())
+}
+
 /// `sanitize_link_target`'s allow-list requires a real `http://`/`https://`
 /// authority, not just the bare scheme name. A directory literally named
 /// `http:` joined with the rest of a declaration's path produces exactly

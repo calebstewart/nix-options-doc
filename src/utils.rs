@@ -80,6 +80,16 @@ const MAX_ENTITY_DECODE_PASSES: usize = 3;
 /// never legitimately appears in a real declaration path, and every
 /// numeric-entity scheme-smuggling attempt - semicolon-terminated or not -
 /// contains it.
+///
+/// Every *decoded* candidate is checked with `decoded_form_is_dangerous`
+/// rather than `scheme_is_dangerous` directly: `scheme_is_dangerous`'s
+/// `http(s)://` allow-list is safe against a literal target only because
+/// `Path::join` can never produce the `//` an authority needs, and entity
+/// references break that guarantee (`&sol;` decodes to `/`), so a decoded
+/// `http(s)://` authority - or a decoded protocol-relative `//` prefix, which
+/// has no scheme for `scheme_is_dangerous` to inspect at all - has to be
+/// checked against what was already present in the *literal* target, not
+/// allowed on its own merits (see nix-options-doc#48 review round 2).
 fn has_dangerous_scheme(target: &str) -> bool {
     if scheme_is_dangerous(target) {
         return true;
@@ -101,7 +111,7 @@ fn has_dangerous_scheme(target: &str) -> bool {
             // Fixed point reached with nothing dangerous found.
             return false;
         }
-        if scheme_is_dangerous(&decoded) || decoded.contains("&#") {
+        if decoded_form_is_dangerous(target, &decoded) || decoded.contains("&#") {
             return true;
         }
         candidate = decoded;
@@ -110,6 +120,58 @@ fn has_dangerous_scheme(target: &str) -> bool {
     // Still decoding to something new after the bound: fail closed. Reaching
     // here needs three-deep nested entity encoding, which no real path has.
     true
+}
+
+/// Reports whether `decoded` - the result of one or more entity-decode
+/// passes over `literal` - is dangerous to use as a link target. Stricter
+/// than `scheme_is_dangerous` in exactly the two ways a decoded (rather than
+/// literal) string needs:
+///
+/// - **Protocol-relative URLs.** `scheme_is_dangerous` looks for a `:` and
+///   has nothing to say about a target with no scheme at all. But entity
+///   references can decode straight to a leading `//` (`&sol;&sol;` ->
+///   `//`), and a `//host/path` target navigates off-site exactly like a
+///   full `http://host/path` one does. A literal target can never start
+///   with `//` - `Path::join` cannot produce that empty leading component -
+///   so rejecting a decoded form that does costs nothing on real input.
+/// - **The `http(s)://` allow-list, re-scoped to what decoding actually
+///   produced.** `scheme_is_dangerous` trusts any real `http(s)://`
+///   authority, which is safe for a *literal* target (again, `Path::join`
+///   cannot manufacture `://`) but not for a decoded one - `&colon;&sol;
+///   &sol;` decodes to `://` just as readily as `&sol;&sol;` decodes to
+///   `//`. So a decoded `http(s)://` authority is only trusted here if the
+///   same authority substring was already present, literally, in `literal`;
+///   otherwise decoding is what manufactured it. A genuine `--out-prefix`
+///   URL with an entity only in its query string (e.g. `&amp;` inside
+///   `?a=1&amp;b=2`) keeps its `http(s)://` prefix untouched by decoding, so
+///   it still passes.
+fn decoded_form_is_dangerous(literal: &str, decoded: &str) -> bool {
+    let cleaned: String = decoded
+        .chars()
+        .filter(|c| !matches!(c, '\t' | '\n' | '\r'))
+        .collect();
+    let trimmed = cleaned.trim_start_matches(|c: char| c.is_ascii_whitespace() || c.is_control());
+    if trimmed.starts_with("//") {
+        return true;
+    }
+
+    if scheme_is_dangerous(decoded) {
+        return true;
+    }
+
+    // `scheme_is_dangerous(decoded)` returned false, so `decoded` has either
+    // no scheme at all (safe - nothing more to check) or a real `http(s)://`
+    // authority (needs the literal-origin check below).
+    let decoded_lower = decoded.to_ascii_lowercase();
+    let has_http_authority =
+        decoded_lower.contains("http://") || decoded_lower.contains("https://");
+    if !has_http_authority {
+        return false;
+    }
+    let literal_lower = literal.to_ascii_lowercase();
+    let already_present_literally =
+        literal_lower.contains("http://") || literal_lower.contains("https://");
+    !already_present_literally
 }
 
 /// Reports whether `target` begins with a URI scheme other than a real

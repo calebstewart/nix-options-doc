@@ -360,3 +360,42 @@ fn test_sanitize_link_target_decodes_to_a_fixed_point() {
         "#"
     );
 }
+
+/// Guards nix-options-doc#48 review round 2, findings 1 and 2:
+/// `scheme_is_dangerous`'s `http(s)://` allow-list is safe against a
+/// *literal* target only because `Path::join` can never produce the `//` an
+/// authority needs - but `&sol;` decodes to `/`, so a hostile directory name
+/// like `http&colon;&sol;&sol;github.com&commat;evil.example` reassembles a
+/// full off-site `http://github.com@evil.example` authority purely through
+/// decoding, with no literal `://` anywhere for the old, permissive
+/// `scheme_is_dangerous(decoded)` check to have distrusted. Dropping the
+/// scheme entirely (`&sol;&sol;github.com&commat;evil.example`) reassembles
+/// a protocol-relative `//github.com@evil.example` target instead, which
+/// navigates off-site just as effectively and has no scheme at all for
+/// `scheme_is_dangerous` to inspect. Both must be neutralized. Also asserts
+/// that a legitimate `--out-prefix`-style `https://` URL whose *query
+/// string* happens to contain an `&amp;` entity - so its `http(s)://`
+/// authority was already present literally, untouched by decoding - still
+/// passes through unchanged.
+#[test]
+fn test_sanitize_link_target_rejects_entity_encoded_off_site_authority() {
+    let dangerous = [
+        "http&colon;&sol;&sol;github.com&commat;evil.example/x.nix",
+        "&sol;&sol;github.com&commat;evil.example/x.nix",
+    ];
+    for payload in dangerous {
+        assert_eq!(
+            crate::utils::sanitize_link_target(payload),
+            "#",
+            "expected {payload:?} to be neutralized"
+        );
+    }
+
+    assert_eq!(
+        crate::utils::sanitize_link_target("https://git.example/x.nix?a=1&amp;b=2"),
+        "https://git.example/x.nix?a=1&amp;b=2",
+        "an --out-prefix https:// URL whose http(s):// authority is already \
+         literal must pass through unchanged even when its query string \
+         contains an entity reference"
+    );
+}
