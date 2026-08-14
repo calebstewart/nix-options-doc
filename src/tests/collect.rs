@@ -391,3 +391,86 @@ fn test_duplicate_option_merge_keeps_first_declaration_primary(
 
     Ok(())
 }
+
+/// An unreadable traversal *root* must surface as an error, not as a
+/// successful empty result (#41): `main` cannot tell `Ok(vec![])` apart
+/// from a tree that genuinely declares no options, so it would overwrite
+/// `--out` with an empty document and exit 0. Unix-only (Windows has no
+/// equivalent of a `0o000` directory), and self-skipping when permissions
+/// are not enforced for this process (root / `CAP_DAC_OVERRIDE`).
+#[cfg(unix)]
+#[test]
+fn test_unreadable_root_is_an_error() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp_dir = TempDir::new()?;
+    let root = temp_dir.path().join("modules");
+    fs::create_dir(&root)?;
+    create_test_file(
+        root.as_path(),
+        "real.nix",
+        r#"{ options.real.thing.enable = lib.mkEnableOption "Real option"; }"#,
+    )?;
+
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o000))?;
+    if fs::read_dir(&root).is_ok() {
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o755))?;
+        return Ok(());
+    }
+
+    let result = collect_options(root.as_path(), &[], &HashMap::new(), false, false);
+    // Restore before asserting so a failure cannot leave an undeletable
+    // directory behind for `TempDir`'s drop.
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o755))?;
+
+    assert!(
+        result.is_err(),
+        "an unreadable root must be an error, got {:?}",
+        result.map(|o| o.len())
+    );
+
+    Ok(())
+}
+
+/// Guards against the obvious over-fix: treating *any* traversal error as
+/// fatal, which would break the documented graceful degradation for a
+/// single unreadable subdirectory below the root (#41). The readable part
+/// of the tree must still be collected.
+#[cfg(unix)]
+#[test]
+fn test_unreadable_subdirectory_is_skipped_not_fatal(
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp_dir = TempDir::new()?;
+    create_test_file(
+        temp_dir.path(),
+        "real.nix",
+        r#"{ options.real.thing.enable = lib.mkEnableOption "Real option"; }"#,
+    )?;
+
+    let locked = temp_dir.path().join("locked");
+    fs::create_dir(&locked)?;
+    create_test_file(
+        locked.as_path(),
+        "hidden.nix",
+        r#"{ options.hidden.thing.enable = lib.mkEnableOption "Hidden option"; }"#,
+    )?;
+
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000))?;
+    if fs::read_dir(&locked).is_ok() {
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755))?;
+        return Ok(());
+    }
+
+    let result = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false);
+    // Restore before asserting so a failure cannot leave an undeletable
+    // directory behind for `TempDir`'s drop.
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755))?;
+
+    let options = result?;
+    assert_eq!(options.len(), 1);
+    assert_eq!(options[0].name, "options.real.thing.enable");
+
+    Ok(())
+}

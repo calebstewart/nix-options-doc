@@ -190,8 +190,11 @@ warnings).
 The output document is always produced, even when zero options are found: `--out`
 is written (and any file already there is overwritten) and stdout gets the empty
 document. The exit status is `0` in that case — an option-less tree is not an
-error. Only real failures (unreadable path, failed clone, unwritable output) exit
-non-zero.
+error. Only real failures exit non-zero: a `--path` that cannot be read at all, a failed
+clone, an unwritable output file. A root path that cannot be traversed is one of those
+failures — the run stops, nothing is written, and an existing `--out` file is left intact
+rather than being replaced by an empty document. A directory *below* the root that cannot
+be read stays a warning: the rest of the tree is still documented and the run exits `0`.
 
 ## Output Examples
 
