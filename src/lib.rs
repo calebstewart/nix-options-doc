@@ -426,7 +426,24 @@ pub fn prepare_path(cli: &Cli) -> Result<(PathBuf, Option<TempDir>), NixDocError
     // the only way to select a specific branch of a local repository - it
     // must keep taking the clone branch rather than being folded into the
     // "missing local path" case.
-    if url.scheme == gix::url::Scheme::File && !cli.io.path.starts_with("file://") {
+    //
+    // The sniff below is case-insensitive on purpose: `gix::url::parse`
+    // lower-cases the scheme before matching, so `FILE://…` and `File://…`
+    // both parse as `Scheme::File` exactly like `file://…` does. A
+    // case-sensitive `starts_with("file://")` would fail the carve-out for
+    // those spellings and misreport a real, existing repository as a
+    // missing local path - a functional regression, since an existing
+    // on-disk `--path` deliberately ignores `--branch`/`--depth`, making
+    // `file://` (in any case) the only way to select a branch of a local
+    // repository. `get(..7)` returns `None` (rather than panicking) when the
+    // value is shorter than 7 bytes or splits a multi-byte character, so
+    // this is safe on arbitrary input.
+    let is_explicit_file_url = cli
+        .io
+        .path
+        .get(..7)
+        .is_some_and(|p| p.eq_ignore_ascii_case("file://"));
+    if url.scheme == gix::url::Scheme::File && !is_explicit_file_url {
         return Err(NixDocError::LocalPathNotFound(cli.io.path.clone()));
     }
 

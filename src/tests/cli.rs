@@ -254,7 +254,11 @@ fn test_prepare_path_url_shaped_value_still_takes_the_clone_branch() {
 /// validates the branch locally before touching the target at all, so this
 /// needs neither a real repository nor network access, and it exercises both
 /// an existing and a nonexistent target path to show the branch is taken
-/// either way.
+/// either way. Also covers `FILE://` and `File://`: `gix::url::parse`
+/// lower-cases the scheme before matching, so those spellings parse
+/// identically to `file://`, but a case-sensitive sniff over the raw
+/// argument (the bug in a prior round of this PR) would have missed them
+/// and misreported the URL as a missing local path.
 #[test]
 fn test_prepare_path_explicit_file_url_still_takes_the_clone_branch(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -266,22 +270,24 @@ fn test_prepare_path_explicit_file_url_still_takes_the_clone_branch(
     let missing = temp.path().join("definitely-not-a-repo");
 
     for target in [existing.to_string_lossy(), missing.to_string_lossy()] {
-        let url = format!("file://{target}");
-        let cli = Cli::parse_from(["program", "--path", &url, "--branch", "my branch"]);
+        for scheme in ["file://", "FILE://", "File://"] {
+            let url = format!("{scheme}{target}");
+            let cli = Cli::parse_from(["program", "--path", &url, "--branch", "my branch"]);
 
-        let err = prepare_path(&cli)
-            .err()
-            .unwrap_or_else(|| panic!("expected an error for file url {url:?}"));
-        let msg = err.to_string();
+            let err = prepare_path(&cli)
+                .err()
+                .unwrap_or_else(|| panic!("expected an error for file url {url:?}"));
+            let msg = err.to_string();
 
-        assert!(
-            msg.contains("Invalid branch or tag name"),
-            "file url {url:?} did not take the clone branch: {msg}"
-        );
-        assert!(
-            !msg.contains("does not exist"),
-            "an explicit file:// URL must not be reported as a missing local path: {msg}"
-        );
+            assert!(
+                msg.contains("Invalid branch or tag name"),
+                "file url {url:?} did not take the clone branch: {msg}"
+            );
+            assert!(
+                !msg.contains("does not exist"),
+                "an explicit file:// URL must not be reported as a missing local path: {msg}"
+            );
+        }
     }
 
     Ok(())
