@@ -281,3 +281,76 @@ fn test_admonition_unknown_type_falls_back_to_note(
 
     Ok(())
 }
+
+/// Guards nix-options-doc#48: `has_dangerous_scheme` (`src/utils.rs`) used to
+/// inspect only the literal bytes of a link target, so an HTML entity
+/// reference could smuggle a dangerous scheme past it - `CommonMark` decodes
+/// entity references inside a link destination, including the `<...>` form
+/// `link_destination` (`src/generate/markdown.rs`) emits, so the decoded
+/// form is what actually reaches a renderer. Covers both smuggling shapes
+/// from the issue (an encoded scheme letter and an encoded tab/newline
+/// splice), the more dangerous variant the issue did not list (an encoded
+/// colon, which skips the literal check's `:`-search early-out entirely),
+/// named vs. numeric vs. hex entity forms, and a double-encoded payload that
+/// only a fixed-point decode (not a single pass) catches. Also asserts a
+/// representative sample of legitimate targets - including one containing a
+/// bare `&` and one with a `--out-prefix`-style query string - pass through
+/// unchanged, so the fix cannot be satisfied by over-blocking anything with
+/// an `&` in it.
+#[test]
+fn test_sanitize_link_target_decodes_entity_references() {
+    let dangerous = [
+        "&#106;avascript:alert(1)/x.nix",
+        "&#x6a;avascript:alert(1)/x.nix",
+        "javascript&#58;alert(1)",
+        "javascript&colon;alert(1)",
+        "java&Tab;script:alert(1)",
+        "java&#9;script:alert(1)",
+        "&NewLine;javascript:alert(1)",
+        "&amp;#106;avascript:alert(1)",
+    ];
+    for payload in dangerous {
+        assert_eq!(
+            crate::utils::sanitize_link_target(payload),
+            "#",
+            "expected {payload:?} to be neutralized"
+        );
+    }
+
+    let benign = [
+        "modules/services/foo.nix",
+        "https://github.com/user/repo/blob/main/modules/foo.nix",
+        "https://git.example/plain/x.nix?ref=main&plain=1",
+        "&#106avascript:alert(1)",
+        "modules/a&b/foo.nix",
+    ];
+    for payload in benign {
+        assert_eq!(
+            crate::utils::sanitize_link_target(payload),
+            payload,
+            "expected {payload:?} to pass through unchanged"
+        );
+    }
+
+    // The pre-existing single-slash authority rule (§4.2) must survive the
+    // refactor into `scheme_is_dangerous`.
+    assert_eq!(
+        crate::utils::sanitize_link_target("http:/evil.example/x.nix"),
+        "#"
+    );
+}
+
+/// Guards specifically against the plausible wrong fix of a single
+/// `decode_html_entities` call: `&amp;#106;avascript:` decodes once to
+/// `&#106;avascript:` (still inert), and only a second pass reaches the
+/// live `javascript:` scheme. A renderer that writes a `CommonMark`-decoded
+/// destination into an `href` without re-escaping `&` hands the browser's
+/// HTML parser exactly this second decode pass, so `has_dangerous_scheme`
+/// (`src/utils.rs`) must decode to a fixed point rather than once.
+#[test]
+fn test_sanitize_link_target_decodes_to_a_fixed_point() {
+    assert_eq!(
+        crate::utils::sanitize_link_target("&amp;#106;avascript:alert(1)"),
+        "#"
+    );
+}
