@@ -341,3 +341,162 @@ fn test_strip_prefix_accepts_bare_prefix() -> Result<(), Box<dyn std::error::Err
 
     Ok(())
 }
+
+/// `--strip-prefix` normalizes a bare prefix to `options.<PREFIX>.`, and
+/// that normalization used to append the trailing dot unconditionally, so
+/// a bare value that already ended in one became `options.<PREFIX>..` - a
+/// pattern no option name can start with, making the flag silently strip
+/// nothing (see nix-options-doc#40). Every spelling of the same prefix
+/// must land on the same pattern.
+#[test]
+fn test_strip_prefix_normalizes_trailing_dot(
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let temp_dir = TempDir::new()?;
+    create_test_file(
+        temp_dir.path(),
+        "dot.nix",
+        r#"
+{ lib, ... }:
+{
+  options.services.foo.enable = lib.mkOption {
+    type = lib.types.bool;
+    default = false;
+    description = "Enable foo.";
+  };
+
+  options.services.bar.enable = lib.mkOption {
+    type = lib.types.bool;
+    default = false;
+    description = "Enable bar.";
+  };
+
+  options.options.deep = lib.mkOption {
+    type = lib.types.bool;
+    default = false;
+    description = "Literally under options.options.";
+  };
+}
+"#,
+    )?;
+
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
+    let names = |args: &[&str]| -> Vec<String> {
+        let cli = Cli::parse_from(std::iter::once("program").chain(args.iter().copied()));
+        filter_options(&options, &cli)
+            .into_iter()
+            .map(|o| o.name)
+            .collect()
+    };
+
+    // The bug: all four spellings of `options.services.foo.` must strip
+    // identically. Only the second one regressed, but pinning all four
+    // keeps them from drifting apart again.
+    for value in [
+        "services.foo",
+        "services.foo.",
+        "options.services.foo",
+        "options.services.foo.",
+    ] {
+        let got = names(&["--strip-prefix", value]);
+        assert!(
+            got.iter().any(|n| n == "enable"),
+            "--strip-prefix {value:?} stripped nothing, got: {got:?}"
+        );
+        assert!(
+            got.iter().any(|n| n == "options.services.bar.enable"),
+            "--strip-prefix {value:?} touched a non-matching name, got: {got:?}"
+        );
+    }
+
+    // Wrong-fix guard: trimming the trailing dot *before* classifying the
+    // value would make the already-qualified `options.` look bare and
+    // re-qualify it to `options.options.`, breaking the flag's own
+    // default value.
+    for value in ["options.", "."] {
+        let got = names(&["--strip-prefix", value]);
+        assert!(
+            got.iter().any(|n| n == "services.foo.enable"),
+            "--strip-prefix {value:?} should strip exactly `options.`, got: {got:?}"
+        );
+    }
+    let default_flag = names(&["--strip-prefix"]);
+    assert!(
+        default_flag.iter().any(|n| n == "services.foo.enable"),
+        "the no-value default should strip `options.`, got: {default_flag:?}"
+    );
+    let empty = names(&["--strip-prefix", ""]);
+    assert_eq!(
+        empty, default_flag,
+        "an empty value should behave like the no-value default"
+    );
+
+    // Wrong-fix guard: a bare `options` is documented to mean
+    // `options.options.`, so it must keep stripping that and must not be
+    // special-cased into `options.`.
+    let bare_options = names(&["--strip-prefix", "options"]);
+    assert!(
+        bare_options.iter().any(|n| n == "deep"),
+        "a bare `options` should mean `options.options.`, got: {bare_options:?}"
+    );
+    assert!(
+        bare_options
+            .iter()
+            .any(|n| n == "options.services.foo.enable"),
+        "a bare `options` must not be treated as `options.`, got: {bare_options:?}"
+    );
+
+    Ok(())
+}
+
+/// The `renamed_to` anchor resolution reuses the *same* normalized
+/// pattern as the option-name stripping, so fixing nix-options-doc#40 at
+/// the name-stripping call site only would leave shim links pointing at
+/// unstripped anchors. A bare, trailing-dot prefix must strip both.
+#[test]
+fn test_strip_prefix_trailing_dot_applies_to_renamed_anchor(
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let temp_dir = TempDir::new()?;
+    create_test_file(
+        temp_dir.path(),
+        "ren_dot.nix",
+        r#"
+{ lib, ... }:
+{
+  imports = [
+    (lib.mkRenamedOptionModule [ "services" "foo" "old" ] [ "services" "foo" "new" ])
+  ];
+
+  options.services.foo.new = lib.mkOption {
+    type = lib.types.str;
+    default = "z";
+    description = "The rename target.";
+  };
+}
+"#,
+    )?;
+
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
+    let cli = Cli::parse_from(["program", "--strip-prefix", "services.foo."]);
+    let filtered = filter_options(&options, &cli);
+
+    let target = filtered
+        .iter()
+        .find(|o| o.name == "new")
+        .expect("rename target should have the trailing-dot prefix stripped");
+    let expected = crate::utils::anchor_slug(&target.name);
+
+    let shim = filtered
+        .iter()
+        .find(|o| o.name == "old")
+        .expect("renamed option shim should have the trailing-dot prefix stripped");
+    assert!(
+        shim.description
+            .as_deref()
+            .unwrap()
+            .contains(&format!("[`services.foo.new`](#{expected})")),
+        "shim did not link to the target's actual anchor `{expected}`: {:?}",
+        shim.description
+    );
+
+    Ok(())
+}

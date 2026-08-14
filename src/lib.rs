@@ -263,17 +263,23 @@ pub fn filter_options(options: &[OptionDoc], cli: &Cli) -> Vec<OptionDoc> {
 
     // Strip prefix: `options.*`
     let strip_prefix_pattern = cli.filter.strip_prefix.as_ref().map(|strip_prefix| {
-        if strip_prefix.is_empty() {
-            "options.".to_string()
-        } else if strip_prefix.starts_with("options.") {
-            if strip_prefix.ends_with('.') {
-                strip_prefix.clone()
-            } else {
-                format!("{}.", strip_prefix)
-            }
+        // Qualify first, on the *raw* value: a prefix that doesn't already
+        // start with `options.` is documented to mean `options.<PREFIX>`.
+        // This has to happen before any trailing-dot trimming - trimming
+        // first would turn the already-qualified `options.` (the flag's own
+        // no-value default) into a bare-looking `options`, which would then
+        // be re-qualified to `options.options.`.
+        let qualified = if strip_prefix.starts_with("options.") {
+            strip_prefix.clone()
         } else {
-            format!("options.{}.", strip_prefix)
-        }
+            format!("options.{strip_prefix}")
+        };
+        // Then normalize the trailing dot exactly once, whichever branch
+        // produced the value. Appending unconditionally is what made a
+        // bare prefix that already ended in a dot (`services.foo.`) come
+        // out as `options.services.foo..`, a pattern no option name can
+        // start with - so the flag silently stripped nothing (#40).
+        format!("{}.", qualified.trim_end_matches('.'))
     });
 
     if let Some(prefix) = &strip_prefix_pattern {
