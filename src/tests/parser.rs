@@ -1507,3 +1507,98 @@ fn test_deep_narrow_submodule_chain_still_fully_expands(
 
     Ok(())
 }
+
+/// Guards against nix-options-doc#60: the `mkEnableOption ""` fallback used
+/// to build its "Whether to enable `<leaf>`." subject with a hard-coded
+/// single-backtick pair (`format!("`{leaf}`")`), even though `leaf` is a
+/// slice of an attribute key taken verbatim from the scanned Nix source and
+/// may itself contain a backtick. A backtick in the leaf then closed the
+/// `CommonMark` code span early and leaked the remainder of the name into
+/// the surrounding prose - the same defect class already fixed for the
+/// Markdown generator (#12) and the rename shims (#49), but present at this
+/// third, previously uncovered site. The fallback must instead route the
+/// leaf through `utils::inline_code`, which sizes its delimiter to the
+/// content and leaves ordinary (backtick-free) leaves byte-identical.
+#[test]
+fn test_enable_option_fallback_subject_escapes_backticks(
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let temp_dir = TempDir::new()?;
+    let content = r#"
+{
+  options."ev`il" = lib.mkEnableOption "";
+  options.test.plain = lib.mkEnableOption "";
+}
+"#;
+    create_test_file(temp_dir.path(), "backtick.nix", content)?;
+
+    let options = collect_options(temp_dir.path(), &[], &HashMap::new(), false, false)?;
+
+    let evil = options
+        .iter()
+        .find(|o| o.name == "options.\"ev`il\"")
+        .expect("the backtick-containing option should still be found");
+    assert_eq!(
+        evil.description,
+        Some("Whether to enable ``\"ev`il\"``.".to_string())
+    );
+
+    // Wrong-fix guard: a fix that unconditionally uses a two-backtick
+    // delimiter, or that always space-pads, would change this ordinary
+    // (backtick-free) leaf's output too, and fail here.
+    let plain = options
+        .iter()
+        .find(|o| o.name == "options.test.plain")
+        .expect("the plain option should still be found");
+    assert_eq!(
+        plain.description,
+        Some("Whether to enable `plain`.".to_string())
+    );
+
+    // Render through the crate's own Markdown -> comrak pipeline and check
+    // the actual HTML, the strongest guard against a syntactically
+    // plausible but still-wrong fix.
+    let markdown = generate_markdown(&options)?;
+    let html = comrak::markdown_to_html(&markdown, &comrak::Options::default());
+    assert!(
+        html.contains("Whether to enable <code>&quot;ev`il&quot;</code>."),
+        "got: {html}"
+    );
+    // Backslash-escaping a backtick is inert inside a CommonMark code span
+    // (CommonMark §6), so this rejects the "just backslash-escape it"
+    // wrong fix.
+    assert!(!markdown.contains("\\`"));
+
+    Ok(())
+}
+
+/// Guards against a wrong fix for nix-options-doc#60: `rsplit('.')` always
+/// yields `Some`, including `Some("")` for an empty prefix, which is
+/// reachable via an interpolated attribute key (`options.${ns}`) combined
+/// with an empty `--replace` value. A fix that routes the leaf through
+/// `inline_code` without also filtering out the empty case would emit a
+/// visible-but-empty code span (`` ` ` ``) instead of degrading to
+/// nixpkgs' own plain "Whether to enable ." text.
+#[test]
+fn test_enable_option_fallback_empty_leaf_has_no_code_span(
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let temp_dir = TempDir::new()?;
+    let content = r#"
+{
+  options.${ns} = lib.mkEnableOption "";
+}
+"#;
+    create_test_file(temp_dir.path(), "empty_leaf.nix", content)?;
+
+    let mut replacements = HashMap::new();
+    replacements.insert("ns".to_string(), String::new());
+
+    let options = collect_options(temp_dir.path(), &[], &replacements, false, false)?;
+
+    assert_eq!(options.len(), 1);
+    let option = &options[0];
+    assert_eq!(option.name, "options.");
+    assert_eq!(option.description, Some("Whether to enable .".to_string()));
+    assert!(!option.description.as_deref().unwrap().contains('`'));
+
+    Ok(())
+}
