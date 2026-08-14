@@ -322,8 +322,13 @@ pub fn filter_options(options: &[OptionDoc], cli: &Cli) -> Vec<OptionDoc> {
         }
         let anchor = utils::anchor_slug(&target_name);
         if let Some(description) = &mut opt.description {
-            let bare = format!("`{target}`");
-            let linked = format!("[`{target}`](#{anchor})");
+            // `bare` must reproduce, byte for byte, the span `parser::find_deprecations`
+            // wrote into this description - the delimiter length and padding depend on
+            // the target's own content (issue #49), so both sides derive it from the
+            // same `inline_code` call on the same string rather than hard-coding a
+            // single backtick.
+            let bare = utils::inline_code(&target);
+            let linked = format!("[{bare}](#{anchor})");
             *description = description.replacen(&bare, &linked, 1);
         }
     }

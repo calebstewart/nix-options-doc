@@ -436,6 +436,7 @@ fn test_deprecated_options() -> Result<(), Box<dyn std::error::Error + Send + Sy
     (lib.mkRenamedOptionModule [ "services" "oldName" ] [ "services" "newName" ])
     (lib.mkRemovedOptionModule [ "services" "goneName" ] "Use services.newName instead.")
     (lib.mkRemovedOptionModule [ "services" "silentlyGone" ] "")
+    (lib.mkRenamedOptionModule [ "services" "tickName" ] [ "services" "new`tick" ])
   ];
 }
 "#;
@@ -464,6 +465,24 @@ fn test_deprecated_options() -> Result<(), Box<dyn std::error::Error + Send + Sy
         .as_deref()
         .unwrap()
         .contains("Use `services.newName` instead."));
+
+    // Regression guard for nix-options-doc#49 at the level of
+    // `parser::find_deprecations` alone (before filter_options gets a
+    // chance to touch it): a rename target containing a backtick must
+    // widen the shim description's code span delimiter to two backticks,
+    // rather than the fixed single backtick that would otherwise close
+    // the span early. `renamed_to` keeps holding the raw, unmodified
+    // target - the JSON contract is unaffected by this fix.
+    let ticked = options
+        .iter()
+        .find(|o| o.name == "options.services.tickName")
+        .expect("renamed option shim (backtick target) should be found");
+    assert_eq!(ticked.renamed_to.as_deref(), Some("services.new`tick"));
+    assert!(ticked
+        .description
+        .as_deref()
+        .unwrap()
+        .contains("Use ``services.new`tick`` instead."));
 
     let removed = options
         .iter()

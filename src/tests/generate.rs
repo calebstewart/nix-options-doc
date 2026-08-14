@@ -806,7 +806,7 @@ fn test_markdown_inline_code_escapes_backticks(
 /// fix that hard-codes a two-backtick delimiter regardless of content.
 #[test]
 fn test_markdown_inline_code_delimiter_and_padding() {
-    use crate::generate::markdown::inline_code;
+    use crate::utils::inline_code;
 
     // Ordinary content keeps a single-backtick delimiter - no gratuitous
     // churn for the overwhelmingly common case.
