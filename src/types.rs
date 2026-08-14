@@ -34,10 +34,22 @@ pub(crate) const MAX_SUBMODULE_DEPTH: usize = 32;
 /// each declaring options of the next one's type, expand into ~b^d nodes
 /// (nix-options-doc#21). Every expansion is triggered by an `mkOption`
 /// that has already pushed an `OptionDoc`, so counting emitted options
-/// bounds the number of options emitted per file. It does *not* bound
+/// bounds how much expansion a file can drive. It does *not* bound
 /// peak memory: per-option size (e.g. description length) is
 /// attacker-controlled and unbounded, so this cap alone doesn't stop a
 /// file from pairing a pathological fan-out with huge per-option payloads.
+///
+/// The cap is a *stop-expanding* threshold, not a hard ceiling on the
+/// emitted count: it is checked when deciding whether to expand another
+/// submodule body, never when emitting an option. When it trips, every
+/// `parse_attrset` frame already in flight still emits its own body's
+/// remaining direct options as the recursion unwinds. Those frames are
+/// distinct bodies (the cycle guard in `parser::parse_attrset` guarantees
+/// it), so the overshoot is bounded by the options declared in the file -
+/// depth x breadth, linear in file size, not a constant
+/// (nix-options-doc#46). Measured worst case so far: a 696 KB file with 31
+/// bodies of 302 direct options each emits 18,991 options against this
+/// 10,000 cap, in ~1.1 s.
 ///
 /// The cap is deliberately far above anything real: the largest single
 /// file in nixpkgs' `nixos/modules` emits 181 options. Hitting this means
