@@ -281,3 +281,141 @@ fn test_admonition_unknown_type_falls_back_to_note(
 
     Ok(())
 }
+
+/// Guards nix-options-doc#48: `has_dangerous_scheme` (`src/utils.rs`) used to
+/// inspect only the literal bytes of a link target, so an HTML entity
+/// reference could smuggle a dangerous scheme past it - `CommonMark` decodes
+/// entity references inside a link destination, including the `<...>` form
+/// `link_destination` (`src/generate/markdown.rs`) emits, so the decoded
+/// form is what actually reaches a renderer. Covers both smuggling shapes
+/// from the issue (an encoded scheme letter and an encoded tab/newline
+/// splice), the more dangerous variant the issue did not list (an encoded
+/// colon, which skips the literal check's `:`-search early-out entirely),
+/// named vs. numeric vs. hex entity forms, a double-encoded payload that
+/// only a fixed-point decode (not a single pass) catches, and - per PR #56
+/// review round 1 - semicolon-less numeric references (`&#106avascript:`,
+/// `java&#9script:`), which the browser's HTML tokenizer still decodes (WHATWG
+/// HTML "numeric character reference end state") even though
+/// `html_escape::decode_html_entities` does not, so the literal `&#` shape
+/// must be caught directly rather than relying on the decode loop. Also
+/// asserts a representative sample of legitimate targets - including one
+/// containing a bare `&` and one with a `--out-prefix`-style query string -
+/// pass through unchanged, so the fix cannot be satisfied by over-blocking
+/// anything with an `&` in it.
+#[test]
+fn test_sanitize_link_target_decodes_entity_references() {
+    let dangerous = [
+        "&#106;avascript:alert(1)/x.nix",
+        "&#x6a;avascript:alert(1)/x.nix",
+        "javascript&#58;alert(1)",
+        "javascript&colon;alert(1)",
+        "java&Tab;script:alert(1)",
+        "java&#9;script:alert(1)",
+        "&NewLine;javascript:alert(1)",
+        "&amp;#106;avascript:alert(1)",
+        "&#106avascript:alert(1)",
+        "java&#9script:alert(1)",
+    ];
+    for payload in dangerous {
+        assert_eq!(
+            crate::utils::sanitize_link_target(payload),
+            "#",
+            "expected {payload:?} to be neutralized"
+        );
+    }
+
+    let benign = [
+        "modules/services/foo.nix",
+        "https://github.com/user/repo/blob/main/modules/foo.nix",
+        "https://git.example/plain/x.nix?ref=main&plain=1",
+        "modules/a&b/foo.nix",
+    ];
+    for payload in benign {
+        assert_eq!(
+            crate::utils::sanitize_link_target(payload),
+            payload,
+            "expected {payload:?} to pass through unchanged"
+        );
+    }
+
+    // The pre-existing single-slash authority rule (§4.2) must survive the
+    // refactor into `scheme_is_dangerous`.
+    assert_eq!(
+        crate::utils::sanitize_link_target("http:/evil.example/x.nix"),
+        "#"
+    );
+}
+
+/// Guards specifically against the plausible wrong fix of a single
+/// `decode_html_entities` call: `&amp;#106;avascript:` decodes once to
+/// `&#106;avascript:` (still inert), and only a second pass reaches the
+/// live `javascript:` scheme. A renderer that writes a `CommonMark`-decoded
+/// destination into an `href` without re-escaping `&` hands the browser's
+/// HTML parser exactly this second decode pass, so `has_dangerous_scheme`
+/// (`src/utils.rs`) must decode to a fixed point rather than once.
+///
+/// The numeric-payload assertion above is *not* discriminating on its own
+/// (nix-options-doc#48 review round 3, finding 1): `&amp;#106;avascript:`
+/// decodes on its very first pass to `&#106;avascript:`, which contains the
+/// literal `&#` shape that `has_dangerous_scheme` rejects outright as a
+/// semicolon-less-numeric-reference guard (`src/utils.rs`'s `target.contains("&#")`
+/// / `decoded.contains("&#")` checks) - so it is caught whether or not the
+/// decode loop actually iterates to a fixed point. A double-encoded *named*
+/// reference has no such escape hatch: `javascript&amp;colon;alert(1)`'s
+/// first decode pass yields `javascript&colon;alert(1)`, which contains no
+/// `&#` anywhere and has no live scheme yet (the colon itself is still
+/// entity-encoded), so a single-pass implementation would find nothing
+/// dangerous and let it straight through. Only a second pass - decoding
+/// `&colon;` to `:` - produces the live `javascript:` scheme that
+/// `decoded_form_is_dangerous` rejects. This assertion is what actually
+/// forces the loop to run more than once.
+#[test]
+fn test_sanitize_link_target_decodes_to_a_fixed_point() {
+    assert_eq!(
+        crate::utils::sanitize_link_target("&amp;#106;avascript:alert(1)"),
+        "#"
+    );
+    assert_eq!(
+        crate::utils::sanitize_link_target("javascript&amp;colon;alert(1)"),
+        "#"
+    );
+}
+
+/// Guards nix-options-doc#48 review round 2, findings 1 and 2:
+/// `scheme_is_dangerous`'s `http(s)://` allow-list is safe against a
+/// *literal* target only because `Path::join` can never produce the `//` an
+/// authority needs - but `&sol;` decodes to `/`, so a hostile directory name
+/// like `http&colon;&sol;&sol;github.com&commat;evil.example` reassembles a
+/// full off-site `http://github.com@evil.example` authority purely through
+/// decoding, with no literal `://` anywhere for the old, permissive
+/// `scheme_is_dangerous(decoded)` check to have distrusted. Dropping the
+/// scheme entirely (`&sol;&sol;github.com&commat;evil.example`) reassembles
+/// a protocol-relative `//github.com@evil.example` target instead, which
+/// navigates off-site just as effectively and has no scheme at all for
+/// `scheme_is_dangerous` to inspect. Both must be neutralized. Also asserts
+/// that a legitimate `--out-prefix`-style `https://` URL whose *query
+/// string* happens to contain an `&amp;` entity - so its `http(s)://`
+/// authority was already present literally, untouched by decoding - still
+/// passes through unchanged.
+#[test]
+fn test_sanitize_link_target_rejects_entity_encoded_off_site_authority() {
+    let dangerous = [
+        "http&colon;&sol;&sol;github.com&commat;evil.example/x.nix",
+        "&sol;&sol;github.com&commat;evil.example/x.nix",
+    ];
+    for payload in dangerous {
+        assert_eq!(
+            crate::utils::sanitize_link_target(payload),
+            "#",
+            "expected {payload:?} to be neutralized"
+        );
+    }
+
+    assert_eq!(
+        crate::utils::sanitize_link_target("https://git.example/x.nix?a=1&amp;b=2"),
+        "https://git.example/x.nix?a=1&amp;b=2",
+        "an --out-prefix https:// URL whose http(s):// authority is already \
+         literal must pass through unchanged even when its query string \
+         contains an entity reference"
+    );
+}

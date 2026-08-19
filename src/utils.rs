@@ -42,6 +42,138 @@ pub fn anchor_slug(name: &str) -> String {
         .collect()
 }
 
+/// How many `html_escape::decode_html_entities` passes `has_dangerous_scheme`
+/// will run before it gives up and fails closed. Two passes cover the
+/// realistic chain (`CommonMark` decodes the link destination, then a renderer
+/// that neglects to re-escape `&` in the `href` it writes hands the browser's
+/// HTML parser a second decode); the third is slack. Every pass strictly
+/// shortens the string, so this loop always terminates on its own - the bound
+/// is a cheap ceiling, not a correctness requirement.
+const MAX_ENTITY_DECODE_PASSES: usize = 3;
+
+/// Reports whether `target` is dangerous to use as a link target, testing
+/// both its literal text and every HTML-entity-decoded form of it.
+///
+/// `Declaration::file_path` is spliced by hand into a `CommonMark` link
+/// destination (`generate::markdown::link_destination`) and an HTML `href`
+/// (`generate::html::render`). `CommonMark` decodes entity references inside a
+/// link destination - *including* inside the `<...>` form that
+/// `link_destination` emits - so a scheme the literal-text check cannot see
+/// gets reassembled downstream: `&#106;avascript:` has no legal scheme
+/// character at its start, and `javascript&#58;` has no `:` at all, yet both
+/// decode into a live `javascript:` URL (see nix-options-doc#48). Decoding
+/// therefore has to happen *before* the scheme test, not after. A renderer
+/// that writes the decoded destination into an `href` without re-escaping `&`
+/// gives the browser's HTML parser a second decode pass, which is why this
+/// iterates to a fixed point rather than decoding once.
+///
+/// `html_escape::decode_html_entities` only decodes references terminated by
+/// `;`, matching `CommonMark`. The browser's HTML tokenizer is looser for
+/// *numeric* references: per the WHATWG HTML "numeric character reference
+/// end state", a missing `;` is a parse error but the code point is still
+/// emitted - only the named-reference path requires the terminator. So a
+/// renderer that writes an undecoded destination into an `href` without
+/// re-escaping `&` hands the browser a decode this crate's decoder can't
+/// reproduce, e.g. `&#106avascript:` -> `javascript:`, with no `;` anywhere
+/// for `decode_html_entities` to key on. Rather than reimplementing that
+/// tokenizer state, this fails closed on the literal shape instead: `&#`
+/// never legitimately appears in a real declaration path, and every
+/// numeric-entity scheme-smuggling attempt - semicolon-terminated or not -
+/// contains it.
+///
+/// Every *decoded* candidate is checked with `decoded_form_is_dangerous`
+/// rather than `scheme_is_dangerous` directly: `scheme_is_dangerous`'s
+/// `http(s)://` allow-list is safe against a literal target only because
+/// `Path::join` can never produce the `//` an authority needs, and entity
+/// references break that guarantee (`&sol;` decodes to `/`), so a decoded
+/// `http(s)://` authority - or a decoded protocol-relative `//` prefix, which
+/// has no scheme for `scheme_is_dangerous` to inspect at all - has to be
+/// checked against what was already present in the *literal* target, not
+/// allowed on its own merits (see nix-options-doc#48 review round 2).
+fn has_dangerous_scheme(target: &str) -> bool {
+    if scheme_is_dangerous(target) {
+        return true;
+    }
+    // Fast path: no `&` means no entity reference is possible, so the literal
+    // check above was already the final word. This keeps every ordinary
+    // filesystem path off the allocating path below.
+    if !target.contains('&') {
+        return false;
+    }
+    if target.contains("&#") {
+        return true;
+    }
+
+    let mut candidate = target.to_string();
+    for _ in 0..MAX_ENTITY_DECODE_PASSES {
+        let decoded = html_escape::decode_html_entities(&candidate).into_owned();
+        if decoded == candidate {
+            // Fixed point reached with nothing dangerous found.
+            return false;
+        }
+        if decoded_form_is_dangerous(target, &decoded) || decoded.contains("&#") {
+            return true;
+        }
+        candidate = decoded;
+    }
+
+    // Still decoding to something new after the bound: fail closed. Reaching
+    // here needs three-deep nested entity encoding, which no real path has.
+    true
+}
+
+/// Reports whether `decoded` - the result of one or more entity-decode
+/// passes over `literal` - is dangerous to use as a link target. Stricter
+/// than `scheme_is_dangerous` in exactly the two ways a decoded (rather than
+/// literal) string needs:
+///
+/// - **Protocol-relative URLs.** `scheme_is_dangerous` looks for a `:` and
+///   has nothing to say about a target with no scheme at all. But entity
+///   references can decode straight to a leading `//` (`&sol;&sol;` ->
+///   `//`), and a `//host/path` target navigates off-site exactly like a
+///   full `http://host/path` one does. A literal target can never start
+///   with `//` - `Path::join` cannot produce that empty leading component -
+///   so rejecting a decoded form that does costs nothing on real input.
+/// - **The `http(s)://` allow-list, re-scoped to what decoding actually
+///   produced.** `scheme_is_dangerous` trusts any real `http(s)://`
+///   authority, which is safe for a *literal* target (again, `Path::join`
+///   cannot manufacture `://`) but not for a decoded one - `&colon;&sol;
+///   &sol;` decodes to `://` just as readily as `&sol;&sol;` decodes to
+///   `//`. So a decoded `http(s)://` authority is only trusted here if the
+///   same authority substring was already present, literally, in `literal`;
+///   otherwise decoding is what manufactured it. A genuine `--out-prefix`
+///   URL with an entity only in its query string (e.g. `&amp;` inside
+///   `?a=1&amp;b=2`) keeps its `http(s)://` prefix untouched by decoding, so
+///   it still passes.
+fn decoded_form_is_dangerous(literal: &str, decoded: &str) -> bool {
+    let cleaned: String = decoded
+        .chars()
+        .filter(|c| !matches!(c, '\t' | '\n' | '\r'))
+        .collect();
+    let trimmed = cleaned.trim_start_matches(|c: char| c.is_ascii_whitespace() || c.is_control());
+    if trimmed.starts_with("//") {
+        return true;
+    }
+
+    if scheme_is_dangerous(decoded) {
+        return true;
+    }
+
+    // `scheme_is_dangerous(decoded)` returned false, so `decoded` has either
+    // no scheme at all (safe - nothing more to check) or a real `http(s)://`
+    // authority (needs the literal-origin check below).
+    let decoded_lower = decoded.to_ascii_lowercase();
+    let has_http_authority =
+        decoded_lower.contains("http://") || decoded_lower.contains("https://");
+    if !has_http_authority {
+        return false;
+    }
+    let literal_lower = literal.to_ascii_lowercase();
+    let already_present_literally =
+        literal_lower.contains("http://") || literal_lower.contains("https://");
+    !already_present_literally
+}
+
 /// Length of the longest run of consecutive backticks in `content`.
 ///
 /// # Arguments
@@ -133,7 +265,7 @@ pub(crate) fn inline_code(content: &str) -> String {
 /// name (e.g. `java\tscript:`) - this strips them first, the same way,
 /// before looking for the scheme. A bare `http`/`https` scheme name is
 /// not enough to be considered safe; see the `://` check below.
-fn has_dangerous_scheme(target: &str) -> bool {
+fn scheme_is_dangerous(target: &str) -> bool {
     let cleaned: String = target
         .chars()
         .filter(|c| !matches!(c, '\t' | '\n' | '\r'))
@@ -191,7 +323,10 @@ fn has_dangerous_scheme(target: &str) -> bool {
 /// existing double-quoted-attribute escaping in the HTML generator (see
 /// `anchor_slug` above) is unrelated and still required alongside it -
 /// one stops a quote breaking out of the attribute, the other stops the
-/// scheme itself from being dangerous.
+/// scheme itself from being dangerous. The scheme test also runs against
+/// every HTML-entity-decoded form of `target`, not just its literal text,
+/// so an encoded scheme or colon cannot smuggle a dangerous URI through
+/// (see nix-options-doc#48).
 pub fn sanitize_link_target(target: &str) -> String {
     if has_dangerous_scheme(target) {
         "#".to_string()

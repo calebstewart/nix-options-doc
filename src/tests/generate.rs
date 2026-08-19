@@ -432,6 +432,189 @@ fn test_dangerous_url_scheme_in_declaration_path_is_neutralized(
     Ok(())
 }
 
+/// End-to-end regression for nix-options-doc#48: `has_dangerous_scheme`
+/// (`src/utils.rs`) used to test only a link target's literal bytes, so an
+/// HTML entity reference could smuggle a dangerous scheme past it and into
+/// the generated Markdown, where `CommonMark` decodes entity references
+/// inside a link destination - including the `<...>` form
+/// `link_destination` (`src/generate/markdown.rs`) emits. Exercises three
+/// payload shapes across all three declarations of one option, so the
+/// heading link, the primary "option-decl" link, and the "Also declared
+/// in" list are all covered: an encoded scheme letter (the issue's own
+/// repro), an encoded colon (a worse variant the issue did not list, since
+/// it skips the literal check's `:`-search early-out entirely), and an
+/// encoded tab splice (the issue's second repro).
+///
+/// The Markdown assertion is what actually guards the bug: it does not
+/// depend on any downstream Markdown renderer's own dangerous-URL
+/// filtering (comrak has one; the `CommonMark` reference implementation and
+/// many static-site generators do not), just on the raw encoded payload
+/// never reaching the `.md` file. The HTML assertions guard a regression
+/// rather than the original bug - HTML output was already inert via
+/// `html_escape::encode_double_quoted_attribute`, which escapes the `&`
+/// that begins every payload here before it ever reaches an `href`.
+///
+/// Built directly from `OptionDoc`/`Declaration` rather than through
+/// `collect_options` writing a file to disk: neither `&` followed by an
+/// entity name nor `:` is guaranteed to survive a real filesystem on every
+/// CI platform, and this repo's CI runs on Windows too.
+#[test]
+fn test_entity_encoded_scheme_in_declaration_path_is_neutralized(
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let encoded_scheme_payload = "&#106;avascript:alert(1)/x.nix".to_string();
+    let encoded_colon_payload = "javascript&#58;alert(1)/x.nix".to_string();
+    let encoded_tab_payload = "java&Tab;script:alert(1)/x.nix".to_string();
+
+    let options = vec![OptionDoc {
+        name: "options.test.evilEntity".to_string(),
+        description: None,
+        nix_type: "boolean".to_string(),
+        default_value: Some("false".to_string()),
+        example: None,
+        renamed_to: None,
+        declarations: vec![
+            Declaration {
+                file_path: encoded_scheme_payload.clone(),
+                line_number: 1,
+                description: None,
+                condition: None,
+            },
+            Declaration {
+                file_path: encoded_colon_payload.clone(),
+                line_number: 2,
+                description: None,
+                condition: None,
+            },
+            Declaration {
+                file_path: encoded_tab_payload.clone(),
+                line_number: 3,
+                description: None,
+                condition: None,
+            },
+        ],
+    }];
+
+    let markdown = generate_markdown(&options)?;
+    for payload in [
+        &encoded_scheme_payload,
+        &encoded_colon_payload,
+        &encoded_tab_payload,
+    ] {
+        // The raw encoded payload must never appear as a link *destination*
+        // - that is the position CommonMark decodes entity references in,
+        // which is the actual vulnerability. It legitimately still appears
+        // as plain backtick-quoted *display text* for the non-primary
+        // declarations (see the "Also declared in" list rendered by
+        // `generate_markdown`, `src/generate/markdown.rs`): that is
+        // pre-existing, intentional behavior, unrelated to this fix, and
+        // safe, because CommonMark never decodes entity references inside a
+        // code span.
+        assert!(
+            !markdown.contains(&format!("(<{payload}")),
+            "raw encoded payload {payload:?} must not reach the generated Markdown as a link destination"
+        );
+    }
+    // Confirms the neutralized form was substituted in, so the previous
+    // assertions cannot pass merely because the option vanished from the
+    // document entirely.
+    assert!(markdown.contains("](<#>)"));
+
+    let html = generate_html(&options)?;
+    assert!(!html.to_lowercase().contains("href=\"javascript:"));
+    for payload in [
+        &encoded_scheme_payload,
+        &encoded_colon_payload,
+        &encoded_tab_payload,
+    ] {
+        assert!(!html.contains(&format!("href=\"{payload}")));
+    }
+
+    Ok(())
+}
+
+/// End-to-end regression for nix-options-doc#48 review round 2, findings 1
+/// and 2: a hostile directory name whose bytes are entity references rather
+/// than literal URL syntax can still reassemble an off-site link once
+/// `CommonMark` decodes the Markdown link destination - either a full
+/// `http://`/`https://` authority (`http&colon;&sol;&sol;` decodes to
+/// `http://`) or a scheme-less protocol-relative one (`&sol;&sol;` decodes
+/// to `//`). Both shapes are legal Unix path bytes and survive a `git
+/// clone`, so both are reachable from the same "scan an untrusted repo"
+/// threat model as the rest of nix-options-doc#48. HTML output was already
+/// inert for these payloads via `html_escape::encode_double_quoted_attribute`
+/// (every `&` in either payload is escaped to `&amp;` before it reaches an
+/// `href`), so the HTML assertions below guard a regression, not the
+/// original bug - Markdown is the vulnerable surface, same as the rest of
+/// nix-options-doc#48.
+///
+/// Built directly from `OptionDoc`/`Declaration` rather than through
+/// `collect_options` writing a file to disk, per this repo's convention for
+/// dangerous-payload tests (`&`/`:`/`;` are not guaranteed to survive every
+/// filesystem, and this repo's CI runs on Windows too).
+#[test]
+fn test_entity_encoded_off_site_authority_in_declaration_path_is_neutralized(
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let encoded_http_authority_payload =
+        "http&colon;&sol;&sol;github.com&commat;evil.example/x.nix".to_string();
+    let encoded_protocol_relative_payload =
+        "&sol;&sol;github.com&commat;evil.example/x.nix".to_string();
+
+    let options = vec![OptionDoc {
+        name: "options.test.evilAuthority".to_string(),
+        description: None,
+        nix_type: "boolean".to_string(),
+        default_value: Some("false".to_string()),
+        example: None,
+        renamed_to: None,
+        declarations: vec![
+            Declaration {
+                file_path: encoded_http_authority_payload.clone(),
+                line_number: 1,
+                description: None,
+                condition: None,
+            },
+            Declaration {
+                file_path: encoded_protocol_relative_payload.clone(),
+                line_number: 2,
+                description: None,
+                condition: None,
+            },
+        ],
+    }];
+
+    let markdown = generate_markdown(&options)?;
+    for payload in [
+        &encoded_http_authority_payload,
+        &encoded_protocol_relative_payload,
+    ] {
+        // The raw encoded payload must never appear as a link *destination*
+        // - the position `CommonMark` decodes entity references in, which is
+        // the actual vulnerability - though it legitimately still appears as
+        // plain backtick-quoted display text elsewhere in the document.
+        assert!(
+            !markdown.contains(&format!("(<{payload}")),
+            "raw encoded payload {payload:?} must not reach the generated Markdown as a link destination"
+        );
+    }
+    // Confirms the neutralized form was substituted in for both
+    // declarations, so the previous assertions cannot pass merely because
+    // the option vanished from the document entirely.
+    assert!(markdown.contains("](<#>)"));
+    assert!(markdown.matches("](<#>)").count() >= 2);
+
+    let html = generate_html(&options)?;
+    assert!(!html.to_lowercase().contains("href=\"http://"));
+    assert!(!html.contains("href=\"//"));
+    for payload in [
+        &encoded_http_authority_payload,
+        &encoded_protocol_relative_payload,
+    ] {
+        assert!(!html.contains(&format!("href=\"{payload}")));
+    }
+
+    Ok(())
+}
+
 /// `sanitize_link_target`'s allow-list requires a real `http://`/`https://`
 /// authority, not just the bare scheme name. A directory literally named
 /// `http:` joined with the rest of a declaration's path produces exactly
